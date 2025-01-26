@@ -1,3 +1,14 @@
+// Derived from 1.15.0 STM32F4_I2C.cs
+//
+// - Fix required for interrupt state update to avoid ISR re-entrancy
+//   when I2C_CR2[10:9] updated to disable events.
+//
+// - Updated to add DMA support.
+//
+// - Updated to fix multi-byte RX transfers
+//
+// Modifications Copyright (c) 2023-2024 eCosCentric Ltd
+// Original assignment:
 //
 // Copyright (c) 2010-2023 Antmicro
 // Copyright (c) 2011-2015 Realtime Embedded
@@ -24,6 +35,8 @@ namespace Antmicro.Renode.Peripherals.I2C
         {
             EventInterrupt = new GPIO();
             ErrorInterrupt = new GPIO();
+            DMATransmit = new GPIO();
+            DMAReceive = new GPIO();
             CreateRegisters();
             Reset();
         }
@@ -32,9 +45,53 @@ namespace Antmicro.Renode.Peripherals.I2C
         {
             if((Registers)offset == Registers.Data)
             {
+                this.Log(LogLevel.Debug, "ReadByte: I2C_DR: entry: state {0} byteTransferFinished {1} acknowledgeEnable {2} willReadOnSelectedSlave {3} transmitterReceiver {4}", state, byteTransferFinished.Value, acknowledgeEnable.Value, willReadOnSelectedSlave, transmitterReceiver.Value);
+
+                if(!byteTransferFinished.Value)
+                {
+                    if(null != selectedSlave)
+                    {
+                        this.Log(LogLevel.Debug, "ReadByte: ROSS: existing dataToReceive {0}", dataToReceive);
+                        if(dataToReceive != null && dataToReceive.Any())
+                        {
+                            this.Log(LogLevel.Debug, "ReadByte:!BTF: data already pending: dataToReceive.Count {0}", dataToReceive.Count);
+                        }
+                        else
+                        {
+                            dataToReceive = new Queue<byte>(selectedSlave.Read());
+                            this.Log(LogLevel.Debug, "ReadByte:!BTF: ROSS dataToReceive.Count {0}", dataToReceive.Count);
+                        }
+                    }
+                }
+
                 byteTransferFinished.Value = false;
+                this.Log(LogLevel.Debug, "ReadByte: I2C_DR: byteTransferFinished set {0}", byteTransferFinished.Value);
                 Update();
-                return (byte)data.Read();
+
+                byte rval = (byte)data.Read();
+
+                this.Log(LogLevel.Debug, "ReadByte: after data.Read: dataRegisterNotEmpty {0}", dataRegisterNotEmpty.Value);
+
+                // We  rely on state being updated when the NAK/STOP processing is triggered
+                if(state == State.ReceivingData)
+                {
+                    if(null != selectedSlave)
+                    {
+                        this.Log(LogLevel.Debug, "ReadByte: ROSS: existing dataToReceive {0}", dataToReceive);
+                        dataToReceive = new Queue<byte>(selectedSlave.Read());
+                        byteTransferFinished.Value = true;
+
+                        DMAReceive.Unset();
+                        machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => DMAReceive.Set());
+
+                        this.Log(LogLevel.Debug, "ReadByte: after ROSS: dataToReceive {0} dataRegisterNotEmpty {1}", dataToReceive, dataRegisterNotEmpty.Value);
+
+                        Update();
+                    }
+                }
+
+                this.Log(LogLevel.Debug, "ReadByte: offset 0x{0:X} : rval 0x{1:X}", offset, rval);
+                return rval;
             }
             else
             {
@@ -45,8 +102,11 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         public void WriteByte(long offset, byte value)
         {
+            this.Log(LogLevel.Debug, "WriteByte: offset 0x{0:X} value 0x{1:X} : dmaEnable {2} state {3}", offset, value, dmaEnable.Value, state);
             if((Registers)offset == Registers.Data)
             {
+                // dataRegisterEmpty reflects I2C_SR1:TxE state
+                this.Log(LogLevel.Debug, "WriteByte:I2C_DR: dataRegisterEmpty {0} dataRegisterNotEmpty {1}", dataRegisterEmpty.Value, dataRegisterNotEmpty.Value);
                 data.Write(offset, value);
             }
             else
@@ -57,11 +117,16 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         public uint ReadDoubleWord(long offset)
         {
-            return registers.Read(offset);
+            //this.Log(LogLevel.Debug, "ReadDoubleWord: offset 0x{0:X}", offset);
+            //return registers.Read(offset);
+            uint rval = registers.Read(offset);
+            this.Log(LogLevel.Debug, "ReadDoubleWord: offset 0x{0:X} : rval 0x{1:X}", offset, rval);
+            return rval;
         }
 
         public void WriteDoubleWord(long offset, uint value)
         {
+            this.Log(LogLevel.Debug, "WriteDoubleWord: offset 0x{0:X} value 0x{1:X}", offset, value);
             registers.Write(offset, value);
         }
 
@@ -70,6 +135,8 @@ namespace Antmicro.Renode.Peripherals.I2C
             state = State.Idle;
             EventInterrupt.Unset();
             ErrorInterrupt.Unset();
+	        DMATransmit.Unset();
+	        DMAReceive.Unset();
 
             registers.Reset();
             data.Reset();
@@ -85,6 +152,16 @@ namespace Antmicro.Renode.Peripherals.I2C
         {
             get;
             private set;
+        }
+
+        public GPIO DMAReceive
+        {
+            get;
+        }
+
+        public GPIO DMATransmit
+        {
+            get;
         }
 
         public long Size
@@ -105,6 +182,11 @@ namespace Antmicro.Renode.Peripherals.I2C
             data = new DoubleWordRegister(this);
 
             acknowledgeEnable = control1.DefineFlagField(10);
+            // CONSIDER: support for I2C_CR1:POS (bit11) // POS only relevant for 2-byte reception
+            // The I2C_CR1:POS setting indicates whether CURRENT byte being received or NEXT byte being received
+
+            dmaLastTransfer = control2.DefineFlagField(12); // 0 == Next DMA EOT is NOT last transfer; 1 == Next DMA EOT is the last transfer
+            dmaEnable = control2.DefineFlagField(11, changeCallback: DMAEnableChange); // 0 == DMA requests disabled; 1 == DMA request enabled when TxE==1 or RxNE==1
 
             bufferInterruptEnable = control2.DefineFlagField(10, changeCallback: InterruptEnableChange);
             eventInterruptEnable = control2.DefineFlagField(9, changeCallback: InterruptEnableChange);
@@ -121,6 +203,7 @@ namespace Antmicro.Renode.Peripherals.I2C
 
             transmitterReceiver = status2.DefineFlagField(2, FieldMode.Read);
             masterSlave = status2.DefineFlagField(0, FieldMode.Read, readCallback: (_,__) => {
+                // CONSIDER: I2C_SR2:ADDR should possibly only be cleared if the previous I2C access was a read of the I2C_SR1 register (RM0033 Rev9 23.6.6)
                 addressSentOrMatched.Value = false;
                 Update();
             });
@@ -143,7 +226,47 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private void InterruptEnableChange(bool oldValue, bool newValue)
         {
-            machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => Update());
+            this.Log(LogLevel.Debug, "InterruptEnableChange: oldValue {0} newValue {1}", oldValue, newValue);
+            if(newValue)
+            {
+                // force synchronisation when enabling interrupt source:
+                machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => Update(), true);
+            }
+            else
+            {
+                // Disable immediately to to avoid interrupt
+                // re-entrancy when CR2 written to disable source:
+                Update();
+            }
+        }
+
+        private void DMAEnableChange(bool oldValue, bool newValue)
+        {
+            this.Log(LogLevel.Debug, "DMAEnableChange: oldValue {0} newValue {1}", oldValue, newValue);
+
+            // Would be ideal if we knew whether we were enabling for RX or TX
+            // TODO:CONSIDER: Check if TxE==1 or RxNE==1
+            // - could maybe use transmitterReceiver.Value
+
+            // if false->true then we should allow DMA data transfers
+            if(newValue)
+            {
+                if(!DMATransmit.IsSet)
+                {
+                    DMATransmit.Unset();
+                    DMATransmit.Set();
+                }
+                if(!DMAReceive.IsSet)
+                {
+                    DMAReceive.Unset();
+                    DMAReceive.Set();
+                }
+            }
+            else
+            {
+                DMATransmit.Unset();
+                DMAReceive.Unset();
+            }
         }
 
         private void Update()
@@ -156,8 +279,10 @@ namespace Antmicro.Renode.Peripherals.I2C
         private uint DataRead(uint oldValue)
         {
             var result = 0u;
+            this.Log(LogLevel.Debug, "DataRead: oldValue 0x{0:X} : dmaEnable {1}", oldValue, dmaEnable.Value);
             if(dataToReceive != null && dataToReceive.Any())
             {
+                this.Log(LogLevel.Debug, "DataRead: dataToReceive.Count {0} : will Dequeue", dataToReceive.Count);
                 result = dataToReceive.Dequeue();
             }
             else
@@ -166,6 +291,7 @@ namespace Antmicro.Renode.Peripherals.I2C
             }
 
             byteTransferFinished.Value = (dataToReceive != null && dataToReceive.Count > 0);
+            this.Log(LogLevel.Debug, "DataRead: byteTransferFinished now {0} result 0x{1:X}", byteTransferFinished.Value, result);
 
             Update();
             return result;
@@ -173,8 +299,10 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private void DataWrite(uint oldValue, uint newValue)
         {
+            this.Log(LogLevel.Debug, "DataWrite: oldValue 0x{0:X} newValue 0x{1:X} : dmaEnable {2} state {3}", oldValue, newValue, dmaEnable.Value, state);
             //moved from WriteByte
             byteTransferFinished.Value = false;
+            this.Log(LogLevel.Debug, "DataWrite: byteTransferFinished set {0}", byteTransferFinished.Value);
             Update();
 
             switch(state)
@@ -192,8 +320,11 @@ namespace Antmicro.Renode.Peripherals.I2C
 
                     if(willReadOnSelectedSlave)
                     {
+                        this.Log(LogLevel.Debug, "DataWrite: ROSS: existing dataToReceive {0}", dataToReceive);
                         dataToReceive = new Queue<byte>(selectedSlave.Read());
                         byteTransferFinished.Value = true;
+                        this.Log(LogLevel.Debug, "DataWrite: ROSS: byteTransferFinished set {0}", byteTransferFinished.Value);
+                        state = State.ReceivingData;
                     }
                     else
                     {
@@ -206,6 +337,7 @@ namespace Antmicro.Renode.Peripherals.I2C
                 }
                 else
                 {
+                    this.Log(LogLevel.Debug, "DataWrite: no child for address 0x{0:X} : set state Idle", address);
                     state = State.Idle;
                     acknowledgeFailed.Value = true;
                 }
@@ -218,11 +350,12 @@ namespace Antmicro.Renode.Peripherals.I2C
                 {
                     dataRegisterEmpty.Value = true;
                     byteTransferFinished.Value = true;
+                    this.Log(LogLevel.Debug, "DataWrite: AwaitingData: byteTransferFinished set {0}", byteTransferFinished.Value);
                     Update();
                 });
                 break;
             default:
-                this.Log(LogLevel.Warning, "Writing {0} to DataRegister in unsupported state {1}.", newValue, state);
+                this.Log(LogLevel.Warning, "Writing 0x{0:X} to DataRegister in unsupported state {1}.", newValue, state);
                 break;
             }
         }
@@ -237,7 +370,7 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private void StopWrite(bool oldValue, bool newValue)
         {
-            this.NoisyLog("Setting STOP bit to {0}", newValue);
+            this.NoisyLog("Setting STOP bit to {0} when state {1}", newValue, state);
             if(!newValue)
             {
                 return;
@@ -245,6 +378,7 @@ namespace Antmicro.Renode.Peripherals.I2C
 
             if(selectedSlave != null && dataToTransfer != null && dataToTransfer.Count > 0)
             {
+                this.Log(LogLevel.Debug, "StopWrite: selectedSlave and dataToTransfer.Count {0}", dataToTransfer.Count);
                 selectedSlave.Write(dataToTransfer.ToArray());
                 dataToTransfer.Clear();
                 state = State.Idle;
@@ -254,11 +388,13 @@ namespace Antmicro.Renode.Peripherals.I2C
             state = State.Idle;
             byteTransferFinished.Value = false;
             dataRegisterEmpty.Value = false;
+            this.Log(LogLevel.Debug, "StopWrite: byteTransferFinished set {0} dataRegisterEmpty set {1}", byteTransferFinished.Value, dataRegisterEmpty.Value);
             Update();
         }
 
         private void StartWrite(bool oldValue, bool newValue)
         {
+            this.Log(LogLevel.Debug, "StartWrite: oldValue {0} newValue {1} : state {2}", oldValue, newValue, state);
             if(!newValue)
             {
                 return;
@@ -275,13 +411,16 @@ namespace Antmicro.Renode.Peripherals.I2C
             transmitterReceiver.Value = false;
             dataRegisterEmpty.Value = false;
             byteTransferFinished.Value = false;
+            this.Log(LogLevel.Debug, "StartWrite: byteTransferFinished set {0}", byteTransferFinished.Value);
             startBit.Value = true;
             if(newValue)
             {
+                this.Log(LogLevel.Debug, "StartWrite: state {0}", state);
                 switch(state)
                 {
                 case State.Idle:
                 case State.AwaitingData: //HACK! Should not be here, forced by ExecuteIn somehow.
+                case State.ReceivingData: // "" (as comment above)
                     state = State.AwaitingAddress;
                     masterSlave.Value = true;
                     Update();
@@ -292,6 +431,7 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private void PeripheralEnableWrite(bool oldValue, bool newValue)
         {
+            this.Log(LogLevel.Debug, "PeripheralEnableWrite: oldValue {0} newValue {1} : state {2}", oldValue, newValue, state);
             if(!newValue)
             {
                 acknowledgeEnable.Value = false;
@@ -300,6 +440,7 @@ namespace Antmicro.Renode.Peripherals.I2C
                 transmitterReceiver.Value = false;
                 dataRegisterEmpty.Value = false;
                 byteTransferFinished.Value = false;
+                this.Log(LogLevel.Debug, "PeripheralEnableWrite: !newValue: byteTransferFinished set {0}", byteTransferFinished.Value);
                 Update();
             }
         }
@@ -310,6 +451,9 @@ namespace Antmicro.Renode.Peripherals.I2C
         private IValueRegisterField dataRegister;
         private IFlagRegisterField acknowledgeFailed, dataRegisterEmpty, dataRegisterNotEmpty, byteTransferFinished, addressSentOrMatched, startBit;
         private IFlagRegisterField transmitterReceiver, masterSlave;
+
+        private IFlagRegisterField dmaLastTransfer;
+        private IFlagRegisterField dmaEnable;
 
         private DoubleWordRegisterCollection registers;
 
@@ -338,6 +482,7 @@ namespace Antmicro.Renode.Peripherals.I2C
             Idle,
             AwaitingAddress,
             AwaitingData,
+            ReceivingData,
         }
     }
 }
