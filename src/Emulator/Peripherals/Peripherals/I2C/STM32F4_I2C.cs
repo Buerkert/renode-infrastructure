@@ -168,63 +168,107 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private void CreateRegisters()
         {
-            var control1 = new DoubleWordRegister(this).WithFlag(15, writeCallback: SoftwareResetWrite, name: "SWRST")
-                .WithFlag(9, FieldMode.Read, name: "StopGen", writeCallback: StopWrite)
-                .WithFlag(8, FieldMode.Read, writeCallback: StartWrite, name: "StartGen")
-                .WithFlag(0, writeCallback: PeripheralEnableWrite, name: "PeriEn");
-            var control2 = new DoubleWordRegister(this).WithValueField(0, 6, name: "Freq");
-            var status1 = new DoubleWordRegister(this);
-            var status2 = new DoubleWordRegister(this);
-            data = new DoubleWordRegister(this);
+            registers = new DoubleWordRegisterCollection(this);
 
-            acknowledgeEnable = control1.DefineFlagField(10);
-            // CONSIDER: support for I2C_CR1:POS (bit11) // POS only relevant for 2-byte reception
-            // The I2C_CR1:POS setting indicates whether CURRENT byte being received or NEXT byte being received
+            Registers.Control1.Define(registers)
+                .WithFlag(0, name: "PE", writeCallback: PeripheralEnableWrite)
+                .WithTaggedFlag("SMBUS", 1)
+                .WithReservedBits(2, 1)
+                .WithTaggedFlag("SMBTYPE", 3)
+                .WithTaggedFlag("ENARP", 4)
+                .WithTaggedFlag("ENPEC", 5)
+                .WithTaggedFlag("ENGC", 6)
+                .WithTaggedFlag("NOSTRETCH", 7)
+                .WithFlag(8, FieldMode.Read, name: "START", writeCallback: StartWrite)
+                .WithFlag(9, FieldMode.Read, name: "STOP", writeCallback: StopWrite)
+                .WithFlag(10, out acknowledgeEnable, name: "ACK")
+                // CONSIDER: support for I2C_CR1:POS (bit11) // POS only relevant for 2-byte reception
+                // The I2C_CR1:POS setting indicates whether CURRENT byte being received or NEXT byte being received
+                .WithTaggedFlag("POS", 11)
+                .WithTaggedFlag("PEC", 12)
+                .WithTaggedFlag("ALERT", 13)
+                .WithReservedBits(14, 1)
+                .WithTaggedFlag("SWRST", 15);
 
-            dmaLastTransfer =
-                control2.DefineFlagField(
-                    12); // 0 == Next DMA EOT is NOT last transfer; 1 == Next DMA EOT is the last transfer
-            dmaEnable = control2.DefineFlagField(11,
-                changeCallback: DMAEnableChange); // 0 == DMA requests disabled; 1 == DMA request enabled when TxE==1 or RxNE==1
+            Registers.Control2.Define(registers)
+                .WithValueField(0, 6, name: "FREQ")
+                .WithReservedBits(6, 2)
+                .WithFlag(8, out errorInterruptEnable, name: "ITERREN")
+                .WithFlag(9, out eventInterruptEnable, name: "ITEVTEN", changeCallback: InterruptEnableChange)
+                .WithFlag(10, out bufferInterruptEnable, name: "ITBUFEN", changeCallback: InterruptEnableChange)
+                // 0 == DMA requests disabled; 1 == DMA request enabled when TxE==1 or RxNE==1
+                .WithFlag(11, out dmaEnable, name: "DMAEN", changeCallback: DMAEnableChange)
+                // 0 == Next DMA EOT is NOT last transfer; 1 == Next DMA EOT is the last transfer
+                .WithFlag(12, out dmaLastTransfer, name: "DMALAST")
+                .WithReservedBits(13, 3);
 
-            bufferInterruptEnable = control2.DefineFlagField(10, changeCallback: InterruptEnableChange);
-            eventInterruptEnable = control2.DefineFlagField(9, changeCallback: InterruptEnableChange);
-            errorInterruptEnable = control2.DefineFlagField(8);
+            Registers.OwnAddress1.Define(registers)
+                .WithTaggedFlag("ADD0", 0)
+                .WithTag("ADD[7:1]", 1, 7)
+                .WithTag("ADD[9:8]", 8, 2)
+                .WithReservedBits(10, 5)
+                .WithTaggedFlag("ADDMODE", 15);
 
-            dataRegister = data.DefineValueField(0, 8, valueProviderCallback: (prevVal) => DataRead((uint)prevVal),
-                writeCallback: (prevVal, val) => DataWrite((uint)prevVal, (uint)val));
+            Registers.OwnAddress2.Define(registers)
+                .WithTaggedFlag("ENDUAL", 0)
+                .WithTag("ADD2[7:1]", 1, 7)
+                .WithReservedBits(8, 8);
 
-            acknowledgeFailed = status1.DefineFlagField(10, FieldMode.ReadToClear | FieldMode.WriteZeroToClear,
-                changeCallback: (_, __) => Update());
-            dataRegisterEmpty = status1.DefineFlagField(7, FieldMode.Read);
-            dataRegisterNotEmpty = status1.DefineFlagField(6, FieldMode.Read,
-                valueProviderCallback: _ => dataToReceive?.Any() ?? false);
-            byteTransferFinished = status1.DefineFlagField(2, FieldMode.Read);
-            addressSentOrMatched = status1.DefineFlagField(1, FieldMode.Read);
-            startBit = status1.DefineFlagField(0, FieldMode.Read);
+            Registers.Data.Define(registers)
+                .WithValueField(0, 8, name: "DR", valueProviderCallback: (prevVal) => DataRead((uint)prevVal),
+                    writeCallback: (prevVal, val) => DataWrite((uint)prevVal, (uint)val))
+                .WithReservedBits(8, 8);
 
-            transmitterReceiver = status2.DefineFlagField(2, FieldMode.Read);
-            masterSlave = status2.DefineFlagField(0, FieldMode.Read, readCallback: (_, __) =>
-            {
-                // CONSIDER: I2C_SR2:ADDR should possibly only be cleared if the previous I2C access was a read of the I2C_SR1 register (RM0033 Rev9 23.6.6)
-                addressSentOrMatched.Value = false;
-                Update();
-            });
+            Registers.Status1.Define(registers)
+                .WithFlag(0, out startBit, FieldMode.Read, name: "SB")
+                .WithFlag(1, out addressSentOrMatched, FieldMode.Read, name: "ADDR")
+                .WithFlag(2, out byteTransferFinished, FieldMode.Read, name: "BTF")
+                .WithTaggedFlag("ADD10", 3)
+                .WithTaggedFlag("STOPF", 4)
+                .WithReservedBits(5, 1)
+                .WithFlag(6, out dataRegisterNotEmpty, FieldMode.Read, name: "RxNE",
+                    valueProviderCallback: _ => dataToReceive?.Any() ?? false)
+                .WithFlag(7, out dataRegisterEmpty, FieldMode.Read, name: "TxE")
+                .WithTaggedFlag("BERR", 8)
+                .WithTaggedFlag("ARLO", 9)
+                .WithFlag(10, out acknowledgeFailed, FieldMode.ReadToClear | FieldMode.WriteZeroToClear, name: "AF",
+                    changeCallback: (_, __) => Update())
+                .WithTaggedFlag("OVR", 11)
+                .WithTaggedFlag("PECERR", 12)
+                .WithReservedBits(13, 1)
+                .WithTaggedFlag("TIMEOUT", 14)
+                .WithTaggedFlag("SMBALERT", 15);
 
-            var registerDictionary = new Dictionary<long, DoubleWordRegister>
-            {
-                { (long)Registers.RiseTime, DoubleWordRegister.CreateRWRegister(0x2) },
-                { (long)Registers.ClockControl, DoubleWordRegister.CreateRWRegister() },
-                { (long)Registers.OwnAddress1, DoubleWordRegister.CreateRWRegister() },
-                { (long)Registers.OwnAddress2, DoubleWordRegister.CreateRWRegister() },
-                { (long)Registers.NoiseFilter, DoubleWordRegister.CreateRWRegister() },
-                { (long)Registers.Control1, control1 },
-                { (long)Registers.Control2, control2 },
-                { (long)Registers.Status1, status1 },
-                { (long)Registers.Status2, status2 },
-                { (long)Registers.Data, data },
-            };
-            registers = new DoubleWordRegisterCollection(this, registerDictionary);
+            Registers.Status2.Define(registers)
+                .WithFlag(0, out masterSlave, FieldMode.Read, name: "MSL", readCallback: (_, __) =>
+                {
+                    // CONSIDER: I2C_SR2:ADDR should possibly only be cleared if the previous I2C access was a read of the I2C_SR1 register (RM0033 Rev9 23.6.6)
+                    addressSentOrMatched.Value = false;
+                    Update();
+                })
+                .WithTaggedFlag("BUSY", 1)
+                .WithFlag(2, out transmitterReceiver, FieldMode.Read, name: "TRA")
+                .WithReservedBits(3, 1)
+                .WithTaggedFlag("GENCALL", 4)
+                .WithTaggedFlag("SMBDEFAULT", 5)
+                .WithTaggedFlag("SMBHOST", 6)
+                .WithTaggedFlag("DUALF", 7)
+                .WithTag("PEC", 8, 8);
+
+            Registers.ClockControl.Define(registers)
+                .WithTag("CCR", 0, 12)
+                .WithReservedBits(12, 2)
+                .WithTaggedFlag("DUTY", 14)
+                .WithTaggedFlag("F/S", 15);
+
+            Registers.RiseTime.Define(registers, 0x2)
+                .WithTag("TRISE", 0, 6)
+                .WithReservedBits(6, 10);
+
+            Registers.NoiseFilter.Define(registers)
+                .WithTag("DNF", 0, 4)
+                .WithTaggedFlag("ANOFF", 4)
+                .WithReservedBits(5, 11);
         }
 
         private void InterruptEnableChange(bool oldValue, bool newValue)
