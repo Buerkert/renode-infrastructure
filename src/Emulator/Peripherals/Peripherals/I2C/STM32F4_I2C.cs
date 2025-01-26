@@ -214,7 +214,7 @@ namespace Antmicro.Renode.Peripherals.I2C
                 .WithTag("ADD2[7:1]", 1, 7)
                 .WithReservedBits(8, 8);
 
-            Registers.Data.Define(registers)
+            data = Registers.Data.Define(registers)
                 .WithValueField(0, 8, name: "DR", valueProviderCallback: (prevVal) => DataRead((uint)prevVal),
                     writeCallback: (prevVal, val) => DataWrite((uint)prevVal, (uint)val))
                 .WithReservedBits(8, 8);
