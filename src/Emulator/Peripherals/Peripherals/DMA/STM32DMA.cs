@@ -13,103 +13,95 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
+
 using System;
-using Antmicro.Renode.Peripherals.Bus;
-using Antmicro.Renode.Logging;
-using Antmicro.Renode.Core;
 using System.Collections.Generic;
 using System.Linq;
+using Antmicro.Renode.Core;
+using Antmicro.Renode.Logging;
+using Antmicro.Renode.Peripherals.Bus;
 
 namespace Antmicro.Renode.Peripherals.DMA
 {
     public sealed class STM32DMA : IDoubleWordPeripheral, IKnownSize, IGPIOReceiver, INumberedGPIOOutput
     {
+        private const int NumberOfStreams = 8;
+        private const int StreamOffsetStart = 0x10;
+        private const int StreamOffsetEnd = 0xCC;
+        private const int StreamSize = 0x18;
+        private readonly DmaEngine engine;
+        private readonly IMachine machine;
+
+        private readonly bool[] streamFinished;
+        private readonly Stream[] streams;
+
         public STM32DMA(IMachine machine)
         {
             streamFinished = new bool[NumberOfStreams];
             streams = new Stream[NumberOfStreams];
-            for(var i = 0; i < streams.Length; i++)
-            {
-                streams[i] = new Stream(this, i);
-            }
+            for (var i = 0; i < streams.Length; i++) streams[i] = new Stream(this, i);
+
             this.machine = machine;
             engine = new DmaEngine(machine.GetSystemBus(this));
             Reset();
         }
 
-        public IReadOnlyDictionary<int, IGPIO> Connections
-        {
-           get
-           {
-              var i = 0;
-              return streams.ToDictionary(x => i++, y => (IGPIO)y.IRQ);
-           }
-        }
-
-        public long Size
-        {
-            get
-            {
-                return 0x400;
-            }
-        }
-
         public uint ReadDoubleWord(long offset)
         {
             //this.Log(LogLevel.Debug, "ReadDoubleWord: offset=0x{0:X}", offset);
-            switch((Registers)offset)
+            switch ((Registers)offset)
             {
-            case Registers.LowInterruptStatus:
-            case Registers.HighInterruptStatus:
-                //return HandleInterruptRead((int)(offset/4));
-                uint rval = HandleInterruptRead((int)(offset/4));
-                this.Log(LogLevel.Debug, "ReadDoubleWord: DMA_xISR: offset=0x{0:X} val 0x{1:X}", offset, rval);
-                return rval;
-            default:
-                if(offset >= StreamOffsetStart && offset <= StreamOffsetEnd)
-                {
-                    offset -= StreamOffsetStart;
-                    //return streams[offset / StreamSize].Read(offset % StreamSize);
-                    uint srval = streams[offset / StreamSize].Read(offset % StreamSize);
-                    this.Log(LogLevel.Debug, "ReadDoubleWord: offset=0x{0:X} (stream {1}) val 0x{2:X}", (StreamOffsetStart + offset), (offset / StreamSize), srval);
-                    return srval;
-                }
-                this.LogUnhandledRead(offset);
-                this.Log(LogLevel.Debug, "ReadDoubleWord: Unhandled: offset=0x{0:X} returning 0x0", offset);
-                return 0;
+                case Registers.LowInterruptStatus:
+                case Registers.HighInterruptStatus:
+                    //return HandleInterruptRead((int)(offset/4));
+                    var rval = HandleInterruptRead((int)(offset / 4));
+                    this.Log(LogLevel.Debug, "ReadDoubleWord: DMA_xISR: offset=0x{0:X} val 0x{1:X}", offset, rval);
+                    return rval;
+                default:
+                    if (offset >= StreamOffsetStart && offset <= StreamOffsetEnd)
+                    {
+                        offset -= StreamOffsetStart;
+                        //return streams[offset / StreamSize].Read(offset % StreamSize);
+                        var srval = streams[offset / StreamSize].Read(offset % StreamSize);
+                        this.Log(LogLevel.Debug, "ReadDoubleWord: offset=0x{0:X} (stream {1}) val 0x{2:X}", StreamOffsetStart + offset, offset / StreamSize,
+                            srval);
+                        return srval;
+                    }
+
+                    this.LogUnhandledRead(offset);
+                    this.Log(LogLevel.Debug, "ReadDoubleWord: Unhandled: offset=0x{0:X} returning 0x0", offset);
+                    return 0;
             }
         }
 
         public void WriteDoubleWord(long offset, uint value)
         {
             this.Log(LogLevel.Debug, "WriteDoubleWord: offset 0x{0:X} value 0x{1:X}", offset, value);
-            switch((Registers)offset)
+            switch ((Registers)offset)
             {
-            case Registers.LowInterruptClear:
-            case Registers.HighInterruptClear:
-                HandleInterruptClear((int)((offset - 8)/4), value);
-                break;
-            default:
-                if(offset >= StreamOffsetStart && offset <= StreamOffsetEnd)
-                {
-                    offset -= StreamOffsetStart;
-                    streams[offset / StreamSize].Write(offset % StreamSize, value);
-                }
-                else
-                {
-                    this.LogUnhandledWrite(offset, value);
-                }
-                break;
+                case Registers.LowInterruptClear:
+                case Registers.HighInterruptClear:
+                    HandleInterruptClear((int)((offset - 8) / 4), value);
+                    break;
+                default:
+                    if (offset >= StreamOffsetStart && offset <= StreamOffsetEnd)
+                    {
+                        offset -= StreamOffsetStart;
+                        streams[offset / StreamSize].Write(offset % StreamSize, value);
+                    }
+                    else
+                    {
+                        this.LogUnhandledWrite(offset, value);
+                    }
+
+                    break;
             }
         }
 
         public void Reset()
         {
             streamFinished.Initialize();
-            foreach(var stream in streams)
-            {
-                stream.Reset();
-            }
+            foreach (var stream in streams) stream.Reset();
         }
 
         // This OnGPIO() method allows arbitrary stream# indication
@@ -126,7 +118,7 @@ namespace Antmicro.Renode.Peripherals.DMA
         public void OnGPIO(int number, bool value)
         {
             this.Log(LogLevel.Debug, "OnGPIO: number {0} value {1}", number, value);
-            if(number < 0 || number >= streams.Length)
+            if (number < 0 || number >= streams.Length)
             {
                 this.Log(LogLevel.Error, "Attempted to start non-existing DMA stream number: {0}. Maximum value is {1}", number, streams.Length);
                 return;
@@ -135,39 +127,44 @@ namespace Antmicro.Renode.Peripherals.DMA
             // Allow (for Set/Unset cases) the current pending DMA request state to be held:
             streams[number].DMARequest = value;
 
-            if(value)
+            if (value)
             {
                 // direction is private to streams
                 //this.Log(LogLevel.Debug, "DMA peripheral request on stream {0} {1} : direction {2}", number, value, streams[number].direction);
                 this.Log(LogLevel.Debug, "DMA peripheral request on stream {0} {1} : Enabled {2}", number, value, streams[number].Enabled);
-                if(streams[number].Enabled)
-                {
+                if (streams[number].Enabled)
                     //streams[number].DoPeripheralTransfer();
                     streams[number].SelectTransfer();
-                }
                 else
-                {
                     // Not really a WARNING since DMA transfer request
                     // is just ignored if DMA stream not enabled:
                     this.Log(LogLevel.Debug, "DMA peripheral request on stream {0} ignored", number);
-                }
+            }
+        }
+
+        public long Size => 0x400;
+
+        public IReadOnlyDictionary<int, IGPIO> Connections
+        {
+            get
+            {
+                var i = 0;
+                return streams.ToDictionary(x => i++, y => (IGPIO)y.IRQ);
             }
         }
 
         private uint HandleInterruptRead(int offset)
         {
             this.Log(LogLevel.Debug, "HandleInterruptRead: offset {0}", offset);
-            lock(streamFinished)
+            lock (streamFinished)
             {
                 var returnValue = 0u;
-                for(var i = 4 * offset; i < 4 * (offset + 1); i++)
+                for (var i = 4 * offset; i < 4 * (offset + 1); i++)
                 {
                     this.Log(LogLevel.Debug, "HandleInterruptRead: streamFinished[{0}] {1}", i, streamFinished[i]);
-                    if(streamFinished[i])
-                    {
-                        returnValue |= 1u << BitNumberForStream(i - 4 * offset);
-                    }
+                    if (streamFinished[i]) returnValue |= 1u << BitNumberForStream(i - 4 * offset);
                 }
+
                 return returnValue;
             }
         }
@@ -175,12 +172,12 @@ namespace Antmicro.Renode.Peripherals.DMA
         private void HandleInterruptClear(int offset, uint value)
         {
             this.Log(LogLevel.Debug, "HandleInterruptClear: offset {0} value 0x{1:X}", offset, value);
-            lock(streamFinished)
+            lock (streamFinished)
             {
-                for(var i = 4 * offset; i < 4 * (offset + 1); i++)
+                for (var i = 4 * offset; i < 4 * (offset + 1); i++)
                 {
                     var bitNo = BitNumberForStream(i - 4 * offset);
-                    if((value & (1 << bitNo)) != 0)
+                    if ((value & (1 << bitNo)) != 0)
                     {
                         this.Log(LogLevel.Debug, "HandleInterruptClear: clearing streamFinished[{0}]", i);
                         streamFinished[i] = false;
@@ -192,30 +189,20 @@ namespace Antmicro.Renode.Peripherals.DMA
 
         private static int BitNumberForStream(int streamNo)
         {
-            switch(streamNo)
+            switch (streamNo)
             {
-            case 0:
-                return 5;
-            case 1:
-                return 11;
-            case 2:
-                return 21;
-            case 3:
-                return 27;
-            default:
-                throw new InvalidOperationException("Should not reach here.");
+                case 0:
+                    return 5;
+                case 1:
+                    return 11;
+                case 2:
+                    return 21;
+                case 3:
+                    return 27;
+                default:
+                    throw new InvalidOperationException("Should not reach here.");
             }
         }
-
-        private readonly bool[] streamFinished;
-        private readonly Stream[] streams;
-        private readonly DmaEngine engine;
-        private readonly IMachine machine;
-
-        private const int NumberOfStreams = 8;
-        private const int StreamOffsetStart = 0x10;
-        private const int StreamOffsetEnd = 0xCC;
-        private const int StreamSize = 0x18;
 
         private enum Registers
         {
@@ -227,6 +214,26 @@ namespace Antmicro.Renode.Peripherals.DMA
 
         private class Stream
         {
+            private readonly STM32DMA parent;
+            private readonly int streamNo;
+            private byte channel;
+            private bool circular;
+            private Direction direction;
+            private uint fifoControl;
+            private bool interruptOnComplete;
+
+            private uint memory0Address;
+            private uint memory1Address;
+            private bool memoryIncrementAddress;
+            private TransferType memoryTransferType;
+            private int numberOfData;
+            private int numberOfDataLatch;
+            private uint peripheralAddress;
+            private bool peripheralIncrementAddress;
+            private TransferType peripheralTransferType;
+            private byte priority;
+            private int transferredSize;
+
             public Stream(STM32DMA parent, int streamNo)
             {
                 this.parent = parent;
@@ -234,67 +241,70 @@ namespace Antmicro.Renode.Peripherals.DMA
                 IRQ = new GPIO();
             }
 
+            public GPIO IRQ { get; }
+
+            public bool Enabled { get; private set; }
+
+            public bool DMARequest { get; set; }
+
             public uint Read(long offset)
             {
                 parent.Log(LogLevel.Debug, "STM32DMA:Stream:Read:[{0}] offset=0x{1:X}", streamNo, offset);
-                switch((Registers)offset)
+                switch ((Registers)offset)
                 {
-                case Registers.Configuration:
-                    return HandleConfigurationRead();
-                case Registers.NumberOfData:
-                    return (uint)numberOfData;
-                case Registers.PeripheralAddress:
-                    return peripheralAddress;
-                case Registers.Memory0Address:
-                    return memory0Address;
-                case Registers.Memory1Address:
-                    return memory1Address;
-                case Registers.FIFOControl:
-                    return fifoControl;
-                default:
-                    parent.Log(LogLevel.Warning, "Unexpected read access from not implemented register (offset 0x{0:X}).", offset);
-                    return 0;
+                    case Registers.Configuration:
+                        return HandleConfigurationRead();
+                    case Registers.NumberOfData:
+                        return (uint)numberOfData;
+                    case Registers.PeripheralAddress:
+                        return peripheralAddress;
+                    case Registers.Memory0Address:
+                        return memory0Address;
+                    case Registers.Memory1Address:
+                        return memory1Address;
+                    case Registers.FIFOControl:
+                        return fifoControl;
+                    default:
+                        parent.Log(LogLevel.Warning, "Unexpected read access from not implemented register (offset 0x{0:X}).", offset);
+                        return 0;
                 }
             }
 
             public void Write(long offset, uint value)
             {
                 parent.Log(LogLevel.Debug, "STM32DMA:Stream:Write:[{0}] offset=0x{1:X} value=0x{2:X}", streamNo, offset, value);
-                switch((Registers)offset)
+                switch ((Registers)offset)
                 {
-                case Registers.Configuration:
-                    HandleConfigurationWrite(value);
-                    break;
-                case Registers.NumberOfData: // TODO: This register is RO if DMA_SxCR:EN==1
-                    // When PSIZE != MSIZE the DMA_SxNDTR value is the
-                    // count of PSIZE transfers
-                    numberOfData = (int)(value & 0xFFFF);
-                    // For CIRC and re-enable we need to reload the original value:
-                    numberOfDataLatch = numberOfData;
-                    break;
-                case Registers.PeripheralAddress: // TODO: This register is RO if DMA_SxCR:EN==1
-                    peripheralAddress = value;
-                    break;
-                case Registers.Memory0Address: // TODO: This register is RO if DMA_SxCR:EN==1
-                    memory0Address = value;
-                    break;
-                case Registers.Memory1Address: // TODO: This register is RO if DMA_SxCR:EN==1
-                    memory1Address = value;
-                    break;
-                case Registers.FIFOControl:
-                    if(0x00000000 != (value & 0xFFFFF400))
-                    {
-                        parent.Log(LogLevel.Warning, "Unexpected FIFOControl write to reserved bits (value 0x{0:X}).", value);
-                    }
-                    fifoControl = value;
-                    break;
-                default:
-                    parent.Log(LogLevel.Warning, "Unexpected write access to not implemented register (offset 0x{0:X}, value 0x{1:X}).", offset, value);
-                    break;
+                    case Registers.Configuration:
+                        HandleConfigurationWrite(value);
+                        break;
+                    case Registers.NumberOfData: // TODO: This register is RO if DMA_SxCR:EN==1
+                        // When PSIZE != MSIZE the DMA_SxNDTR value is the
+                        // count of PSIZE transfers
+                        numberOfData = (int)(value & 0xFFFF);
+                        // For CIRC and re-enable we need to reload the original value:
+                        numberOfDataLatch = numberOfData;
+                        break;
+                    case Registers.PeripheralAddress: // TODO: This register is RO if DMA_SxCR:EN==1
+                        peripheralAddress = value;
+                        break;
+                    case Registers.Memory0Address: // TODO: This register is RO if DMA_SxCR:EN==1
+                        memory0Address = value;
+                        break;
+                    case Registers.Memory1Address: // TODO: This register is RO if DMA_SxCR:EN==1
+                        memory1Address = value;
+                        break;
+                    case Registers.FIFOControl:
+                        if (0x00000000 != (value & 0xFFFFF400))
+                            parent.Log(LogLevel.Warning, "Unexpected FIFOControl write to reserved bits (value 0x{0:X}).", value);
+
+                        fifoControl = value;
+                        break;
+                    default:
+                        parent.Log(LogLevel.Warning, "Unexpected write access to not implemented register (offset 0x{0:X}, value 0x{1:X}).", offset, value);
+                        break;
                 }
             }
-
-            public GPIO IRQ { get; private set; }
 
             public void Reset()
             {
@@ -318,45 +328,49 @@ namespace Antmicro.Renode.Peripherals.DMA
             {
                 var sourceAddress = 0u;
                 var destinationAddress = 0u;
-                switch(direction)
+                switch (direction)
                 {
-                case Direction.PeripheralToMemory:
-                case Direction.MemoryToMemory:
-                    sourceAddress = peripheralAddress;
-                    destinationAddress = memory0Address;
-                    break;
-                case Direction.MemoryToPeripheral:
-                    sourceAddress = memory0Address;
-                    destinationAddress = peripheralAddress;
-                    break;
+                    case Direction.PeripheralToMemory:
+                    case Direction.MemoryToMemory:
+                        sourceAddress = peripheralAddress;
+                        destinationAddress = memory0Address;
+                        break;
+                    case Direction.MemoryToPeripheral:
+                        sourceAddress = memory0Address;
+                        destinationAddress = peripheralAddress;
+                        break;
                 }
 
                 var sourceTransferType = direction == Direction.PeripheralToMemory ? peripheralTransferType : memoryTransferType;
                 var destinationTransferType = direction == Direction.MemoryToPeripheral ? peripheralTransferType : memoryTransferType;
                 var incrementSourceAddress = direction == Direction.PeripheralToMemory ? peripheralIncrementAddress : memoryIncrementAddress;
                 var incrementDestinationAddress = direction == Direction.MemoryToPeripheral ? peripheralIncrementAddress : memoryIncrementAddress;
-                parent.Log(LogLevel.Debug, "CreateRequest: Request: source 0x{0:X} destination 0x{1:X} size {2} readTransferType {3} writeTransferType {4} incrementReadAddress {5} incrementWriteAddress {6}", sourceAddress, (uint)(destinationAddress + (destinationOffset ?? 0)), size ?? numberOfData, sourceTransferType, destinationTransferType, incrementSourceAddress, incrementDestinationAddress);
-                return new Request(sourceAddress, (uint)(destinationAddress + (destinationOffset ?? 0)), size ?? numberOfData, sourceTransferType, destinationTransferType,
-                        incrementSourceAddress, incrementDestinationAddress);
+                parent.Log(LogLevel.Debug,
+                    "CreateRequest: Request: source 0x{0:X} destination 0x{1:X} size {2} readTransferType {3} writeTransferType {4} incrementReadAddress {5} incrementWriteAddress {6}",
+                    sourceAddress, (uint)(destinationAddress + (destinationOffset ?? 0)), size ?? numberOfData, sourceTransferType, destinationTransferType,
+                    incrementSourceAddress, incrementDestinationAddress);
+                return new Request(sourceAddress, (uint)(destinationAddress + (destinationOffset ?? 0)), size ?? numberOfData, sourceTransferType,
+                    destinationTransferType,
+                    incrementSourceAddress, incrementDestinationAddress);
             }
 
 
             // If doing 16- or 32-bit DMA transfers (PSIZE/MSIZE) then
             // we need to treat a single transfer as 1-item of PSIZE.
-	    //
+            //
             // If circular then we do not auto-disable but should
             // reset numberOfData = numberOfDataLatch and continue DMA
             // requests
 
             public void DoTransfer()
             {
-                parent.Log(LogLevel.Debug, "DoTransfer: entry: memoryTransferType {0} transferredSize {1} direction {2}", (int)memoryTransferType, transferredSize, direction);
+                parent.Log(LogLevel.Debug, "DoTransfer: entry: memoryTransferType {0} transferredSize {1} direction {2}", (int)memoryTransferType,
+                    transferredSize, direction);
 
                 var request = CreateRequest();
                 parent.Log(LogLevel.Debug, "DoTransfer: request.Size {0}", request.Size);
-                if(request.Size > 0)
-                {
-                    lock(parent.streamFinished)
+                if (request.Size > 0)
+                    lock (parent.streamFinished)
                     {
                         parent.engine.IssueCopy(request);
                         if (circular)
@@ -366,41 +380,42 @@ namespace Antmicro.Renode.Peripherals.DMA
                         }
                         else
                         {
-                            numberOfData -= (request.Size / (int)peripheralTransferType);
+                            numberOfData -= request.Size / (int)peripheralTransferType;
                             Enabled = false;
                         }
+
                         parent.streamFinished[streamNo] = true;
-                        parent.Log(LogLevel.Debug, "DoTransfer: setting streamFinished[{0}] true : interruptOnComplete {1} numberOfData {2}", streamNo, interruptOnComplete, numberOfData);
-                        if(interruptOnComplete)
-                        {
-                            parent.machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => IRQ.Set());
-                        }
+                        parent.Log(LogLevel.Debug, "DoTransfer: setting streamFinished[{0}] true : interruptOnComplete {1} numberOfData {2}", streamNo,
+                            interruptOnComplete, numberOfData);
+                        if (interruptOnComplete) parent.machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => IRQ.Set());
                     }
-                }
             }
 
             public void DoPeripheralTransfer()
             {
-                parent.Log(LogLevel.Debug, "DoPeripheralTransfer: entry: memoryTransferType {0} transferredSize {1} direction {2}", (int)memoryTransferType, transferredSize, direction);
+                parent.Log(LogLevel.Debug, "DoPeripheralTransfer: entry: memoryTransferType {0} transferredSize {1} direction {2}", (int)memoryTransferType,
+                    transferredSize, direction);
                 // NOTE: Since we are only called for P2M the
                 // transferredSize here is used as the
                 // "destinationOffset" index when incrementing the
                 // memory address
-                var request = CreateRequest((int)memoryTransferType, (memoryIncrementAddress ? transferredSize : 0));
+                var request = CreateRequest((int)memoryTransferType, memoryIncrementAddress ? transferredSize : 0);
                 transferredSize += (int)memoryTransferType;
-                parent.Log(LogLevel.Debug, "DoPeripheralTransfer: request.Size {0} transferredSize {1} : numberOfData {2}", request.Size, transferredSize, numberOfData);
-                if(request.Size > 0)
-                {
-                    lock(parent.streamFinished)
+                parent.Log(LogLevel.Debug, "DoPeripheralTransfer: request.Size {0} transferredSize {1} : numberOfData {2}", request.Size, transferredSize,
+                    numberOfData);
+                if (request.Size > 0)
+                    lock (parent.streamFinished)
                     {
                         parent.engine.IssueCopy(request);
-                        parent.Log(LogLevel.Debug, "DoPeripheralTransfer: request.Size {0} transferredSize {1} numberOfData {2}  peripheralTransferType {3} ({4})", request.Size, transferredSize, numberOfData, peripheralTransferType, (numberOfData * (int)peripheralTransferType));
+                        parent.Log(LogLevel.Debug,
+                            "DoPeripheralTransfer: request.Size {0} transferredSize {1} numberOfData {2}  peripheralTransferType {3} ({4})", request.Size,
+                            transferredSize, numberOfData, peripheralTransferType, numberOfData * (int)peripheralTransferType);
                         // TODO:CONSIDER:OPTIMISE: We should be able
                         // to cache the (numberOfData * (int)peripheralTransferType)
                         // value when the DMA_SxCR is written since at
                         // that point it is fixed; and it will avoid
                         // the repeated multiplication operation here.
-                        if(transferredSize == (numberOfData * (int)peripheralTransferType))
+                        if (transferredSize == numberOfData * (int)peripheralTransferType)
                         {
                             if (circular)
                             {
@@ -409,38 +424,27 @@ namespace Antmicro.Renode.Peripherals.DMA
                             }
                             else
                             {
-                                numberOfData -= (transferredSize / (int)peripheralTransferType);
+                                numberOfData -= transferredSize / (int)peripheralTransferType;
                                 Enabled = false;
                             }
-                            parent.Log(LogLevel.Debug, "DoPeripheralTransfer: setting streamFinished[{0}] true : interruptOnComplete {1} numberOfData {2}", streamNo, interruptOnComplete, numberOfData);
+
+                            parent.Log(LogLevel.Debug, "DoPeripheralTransfer: setting streamFinished[{0}] true : interruptOnComplete {1} numberOfData {2}",
+                                streamNo, interruptOnComplete, numberOfData);
                             parent.streamFinished[streamNo] = true;
                             transferredSize = 0;
-                            if(interruptOnComplete)
-                            {
-                                parent.machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => IRQ.Set());
-                            }
+                            if (interruptOnComplete) parent.machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => IRQ.Set());
                         }
                     }
-                }
             }
 
             public void SelectTransfer()
             {
                 parent.Log(LogLevel.Debug, "SelectTransfer: direction {0}", direction);
 
-                if((direction == Direction.MemoryToMemory) || (direction == Direction.MemoryToPeripheral))
-                {
-                    DoTransfer();
-                }
-                if(direction == Direction.PeripheralToMemory)
-                {
-                    DoPeripheralTransfer();
-                }
+                if (direction == Direction.MemoryToMemory || direction == Direction.MemoryToPeripheral) DoTransfer();
+
+                if (direction == Direction.PeripheralToMemory) DoPeripheralTransfer();
             }
-
-            public bool Enabled { get; private set; }
-
-            public bool DMARequest { get; set; }
 
             private uint HandleConfigurationRead()
             {
@@ -450,10 +454,10 @@ namespace Antmicro.Renode.Peripherals.DMA
 
                 returnValue |= FromTransferType(memoryTransferType) << 13;
                 returnValue |= FromTransferType(peripheralTransferType) << 11;
-                returnValue |= memoryIncrementAddress ? (1u << 10) : 0u;
-                returnValue |= peripheralIncrementAddress ? (1u << 9) : 0u;
-                returnValue |= ((uint)direction) << 6;
-                returnValue |= interruptOnComplete ? (1u << 4) : 0u;
+                returnValue |= memoryIncrementAddress ? 1u << 10 : 0u;
+                returnValue |= peripheralIncrementAddress ? 1u << 9 : 0u;
+                returnValue |= (uint)direction << 6;
+                returnValue |= interruptOnComplete ? 1u << 4 : 0u;
                 // regarding enable bit - our transfer is always finished
                 parent.Log(LogLevel.Debug, "HandleConfigurationRead:[{0}] returning 0x{1:X}", streamNo, returnValue);
                 return returnValue;
@@ -499,25 +503,21 @@ namespace Antmicro.Renode.Peripherals.DMA
                 //      bits23-24 MBURST
 
                 // we ignore transfer error interrupt enable as we never post errors
-                if((value & ~0xE037FD5) != 0)
-                {
+                if ((value & ~0xE037FD5) != 0)
                     parent.Log(LogLevel.Warning, "Channel {0}: unsupported bits written to configuration register. Value is 0x{1:X}.", streamNo, value);
-                }
 
-                if((value & 1) != 0)
+                if ((value & 1) != 0)
                 {
                     numberOfData = numberOfDataLatch; // as per RM0033 rev9 9.5.6
 
-                    parent.Log(LogLevel.Debug, "HandleConfigurationWrite:[{0}] Enabled : direction {1} DMARequest {2} numberOfData {3} memoryIncrementAddress {4} peripheralIncremenetAddress {5}", streamNo, direction, DMARequest, numberOfData, memoryIncrementAddress, peripheralIncrementAddress);
+                    parent.Log(LogLevel.Debug,
+                        "HandleConfigurationWrite:[{0}] Enabled : direction {1} DMARequest {2} numberOfData {3} memoryIncrementAddress {4} peripheralIncremenetAddress {5}",
+                        streamNo, direction, DMARequest, numberOfData, memoryIncrementAddress, peripheralIncrementAddress);
 
-                    if((direction != Direction.PeripheralToMemory) && DMARequest)
-                    {
+                    if (direction != Direction.PeripheralToMemory && DMARequest)
                         DoTransfer();
-                    }
                     else
-                    {
                         Enabled = true;
-                    }
                 }
                 else
                 {
@@ -529,53 +529,34 @@ namespace Antmicro.Renode.Peripherals.DMA
             private TransferType ToTransferType(uint dataSize)
             {
                 dataSize &= 3;
-                switch(dataSize)
+                switch (dataSize)
                 {
-                case 0:
-                    return TransferType.Byte;
-                case 1:
-                    return TransferType.Word;
-                case 2:
-                    return TransferType.DoubleWord;
-                default:
-                    parent.Log(LogLevel.Warning, "Stream {0}: Non existitng possible value written as data size.", streamNo);
-                    return TransferType.Byte;
+                    case 0:
+                        return TransferType.Byte;
+                    case 1:
+                        return TransferType.Word;
+                    case 2:
+                        return TransferType.DoubleWord;
+                    default:
+                        parent.Log(LogLevel.Warning, "Stream {0}: Non existitng possible value written as data size.", streamNo);
+                        return TransferType.Byte;
                 }
             }
 
             private static uint FromTransferType(TransferType transferType)
             {
-                switch(transferType)
+                switch (transferType)
                 {
-                case TransferType.Byte:
-                    return 0;
-                case TransferType.Word:
-                    return 1;
-                case TransferType.DoubleWord:
-                    return 2;
+                    case TransferType.Byte:
+                        return 0;
+                    case TransferType.Word:
+                        return 1;
+                    case TransferType.DoubleWord:
+                        return 2;
                 }
+
                 throw new InvalidOperationException("Should not reach here.");
             }
-
-            private uint memory0Address;
-            private uint memory1Address;
-            private uint peripheralAddress;
-            private uint fifoControl;
-            private int numberOfData;
-            private int numberOfDataLatch;
-            private int transferredSize;
-            private TransferType memoryTransferType;
-            private TransferType peripheralTransferType;
-            private bool memoryIncrementAddress;
-            private bool peripheralIncrementAddress;
-            private bool circular;
-            private Direction direction;
-            private bool interruptOnComplete;
-            private byte channel;
-            private byte priority;
-
-            private readonly STM32DMA parent;
-            private readonly int streamNo;
 
             private enum Registers
             {
@@ -584,7 +565,7 @@ namespace Antmicro.Renode.Peripherals.DMA
                 PeripheralAddress = 0x8, // DMA_SxPAR
                 Memory0Address = 0xC, // DMA_SxM0AR
                 Memory1Address = 0x10, // DMA_SxM1AR
-                FIFOControl = 0x14, // DMA_SxFCR
+                FIFOControl = 0x14 // DMA_SxFCR
             }
 
             private enum Direction : byte
