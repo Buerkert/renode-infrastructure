@@ -15,7 +15,6 @@ using System.Collections.Generic;
 using System.Linq;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Utilities;
-using IronPython.Runtime.Operations;
 
 namespace Antmicro.Renode.Peripherals.I2C
 {
@@ -383,7 +382,7 @@ namespace Antmicro.Renode.Peripherals.I2C
             }
 
             var data = dataToTransfer.ToArray();
-            this.Log(LogLevel.Noisy, "SendDataToSlave: sending to slave [{0}]", ", ".join(data.Select(x => "0x" + x.ToString("X"))));
+            this.Log(LogLevel.Noisy, "SendDataToSlave: sending to slave [{0}]", string.Join(", ", data.Select(x => "0x" + x.ToString("X"))));
             selectedSlave.Write(data);
             dataToTransfer.Clear();
             Update();
@@ -405,7 +404,7 @@ namespace Antmicro.Renode.Peripherals.I2C
             }
 
             var data = selectedSlave.Read();
-            this.Log(LogLevel.Noisy, "ReceiveDataFromSlave: slave returned [{0}]", ", ".join(data.Select(x => "0x" + x.ToString("X"))));
+            this.Log(LogLevel.Noisy, "ReceiveDataFromSlave: slave returned [{0}]", string.Join(", ", data.Select(x => "0x" + x.ToString("X"))));
             dataToReceive.EnqueueRange(data);
             Update();
         }
