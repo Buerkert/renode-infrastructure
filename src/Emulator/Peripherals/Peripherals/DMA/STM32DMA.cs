@@ -16,6 +16,21 @@ using Antmicro.Renode.Peripherals.Bus;
 
 namespace Antmicro.Renode.Peripherals.DMA
 {
+    /// <summary>
+    /// Implementation of the STM32 DMA controller.
+    /// </summary>
+    ///<remarks>
+    /// TODO: not implemented features:
+    ///     - channel selection
+    ///     - FIFO mode -> only direct for now, which means src and dst sizes must be the same
+    ///     - Peripheral increment offset size
+    ///     - Double buffer mode
+    ///     - Half transfer interrupt
+    ///     - Error interrupts: DMEIE, TEIE, FEIE
+    ///     - Peripheral flow controller
+    ///     - Burst transfer configuration
+    ///
+    /// </remarks>
     [AllowedTranslations(AllowedTranslation.ByteToDoubleWord | AllowedTranslation.WordToDoubleWord)]
     public sealed class STM32DMA : IDoubleWordPeripheral, IKnownSize, IGPIOReceiver, INumberedGPIOOutput
     {
