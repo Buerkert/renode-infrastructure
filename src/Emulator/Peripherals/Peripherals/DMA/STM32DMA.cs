@@ -202,13 +202,47 @@ namespace Antmicro.Renode.Peripherals.DMA
 
             public uint Read(long offset)
             {
-                parent.Log(LogLevel.Debug, "STM32DMA:Stream:Read:[{0}] offset=0x{1:X}", streamNo, offset);
+                parent.Log(LogLevel.Noisy, "STM32DMA:Stream:Read:[{0}] reg={1}", streamNo, (Registers)offset);
                 return registers.Read(offset);
             }
 
             public void Write(long offset, uint value)
             {
-                parent.Log(LogLevel.Noisy, "STM32DMA:Stream:Write:[{0}] offset=0x{1:X} value=0x{2:X}", streamNo, offset, value);
+                parent.Log(LogLevel.Noisy, "STM32DMA:Stream:Write:[{0}] reg={1} value=0x{2:X}", streamNo, (Registers)offset, value);
+                if (Enabled)
+                {
+                    var current = registers.Read(offset);
+                    if (current != value)
+                    {
+                        var allowedMask = 0u;
+                        switch ((Registers)offset)
+                        {
+                            case Registers.Configuration:
+                                allowedMask = 0b11111; // EN, DMEIE, TEIE, HTIE, TCIE
+                                break;
+                            case Registers.FIFOControl:
+                                allowedMask = 1 << 7; // FEIE
+                                break;
+                        }
+
+                        var preserve = current & ~allowedMask;
+                        var newValue = preserve | (value & allowedMask);
+                        if (newValue == current)
+                        {
+                            parent.Log(LogLevel.Warning, "Stream {0} is enabled, ignoring write to register {1} with value 0x{2:X}", streamNo,
+                                (Registers)offset, value);
+                            return;
+                        }
+
+                        if (newValue != value)
+                        {
+                            parent.Log(LogLevel.Warning, "Stream {0} is enabled, writing 0x{1:X} instead of 0x{2:X} to register {3}", streamNo, newValue,
+                                value, (Registers)offset);
+                            value = newValue;
+                        }
+                    }
+                }
+
                 registers.Write(offset, value);
             }
 
