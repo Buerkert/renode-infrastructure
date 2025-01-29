@@ -25,16 +25,6 @@ namespace Antmicro.Renode.Peripherals.DMA
 {
     public sealed class STM32DMA : IDoubleWordPeripheral, IKnownSize, IGPIOReceiver, INumberedGPIOOutput
     {
-        private const int NumberOfStreams = 8;
-        private const int StreamOffsetStart = 0x10;
-        private const int StreamOffsetEnd = 0xCC;
-        private const int StreamSize = 0x18;
-        private readonly DmaEngine engine;
-        private readonly IMachine machine;
-
-        private readonly bool[] streamFinished;
-        private readonly Stream[] streams;
-
         public STM32DMA(IMachine machine)
         {
             streamFinished = new bool[NumberOfStreams];
@@ -204,6 +194,16 @@ namespace Antmicro.Renode.Peripherals.DMA
             }
         }
 
+        private const int NumberOfStreams = 8;
+        private const int StreamOffsetStart = 0x10;
+        private const int StreamOffsetEnd = 0xCC;
+        private const int StreamSize = 0x18;
+        private readonly DmaEngine engine;
+        private readonly IMachine machine;
+
+        private readonly bool[] streamFinished;
+        private readonly Stream[] streams;
+
         private enum Registers
         {
             LowInterruptStatus = 0x0, // DMA_LISR
@@ -214,26 +214,6 @@ namespace Antmicro.Renode.Peripherals.DMA
 
         private class Stream
         {
-            private readonly STM32DMA parent;
-            private readonly int streamNo;
-            private byte channel;
-            private bool circular;
-            private Direction direction;
-            private uint fifoControl;
-            private bool interruptOnComplete;
-
-            private uint memory0Address;
-            private uint memory1Address;
-            private bool memoryIncrementAddress;
-            private TransferType memoryTransferType;
-            private int numberOfData;
-            private int numberOfDataLatch;
-            private uint peripheralAddress;
-            private bool peripheralIncrementAddress;
-            private TransferType peripheralTransferType;
-            private byte priority;
-            private int transferredSize;
-
             public Stream(STM32DMA parent, int streamNo)
             {
                 this.parent = parent;
@@ -350,8 +330,7 @@ namespace Antmicro.Renode.Peripherals.DMA
                     sourceAddress, (uint)(destinationAddress + (destinationOffset ?? 0)), size ?? numberOfData, sourceTransferType, destinationTransferType,
                     incrementSourceAddress, incrementDestinationAddress);
                 return new Request(sourceAddress, (uint)(destinationAddress + (destinationOffset ?? 0)), size ?? numberOfData, sourceTransferType,
-                    destinationTransferType,
-                    incrementSourceAddress, incrementDestinationAddress);
+                    destinationTransferType, incrementSourceAddress, incrementDestinationAddress);
             }
 
 
@@ -362,88 +341,100 @@ namespace Antmicro.Renode.Peripherals.DMA
             // reset numberOfData = numberOfDataLatch and continue DMA
             // requests
 
-            public void DoTransfer()
+            public void DoMemoryTransfer()
             {
-                parent.Log(LogLevel.Debug, "DoTransfer: entry: memoryTransferType {0} transferredSize {1} direction {2}", (int)memoryTransferType,
-                    transferredSize, direction);
-
                 var request = CreateRequest();
-                parent.Log(LogLevel.Debug, "DoTransfer: request.Size {0}", request.Size);
-                if (request.Size > 0)
-                    lock (parent.streamFinished)
-                    {
-                        parent.engine.IssueCopy(request);
-                        if (circular)
-                        {
-                            numberOfData = numberOfDataLatch;
-                            parent.Log(LogLevel.Debug, "DoTransfer: circular: reset numberOfData {0}", numberOfData);
-                        }
-                        else
-                        {
-                            numberOfData -= request.Size / (int)peripheralTransferType;
-                            Enabled = false;
-                        }
+                if (request.Size <= 0)
+                {
+                    parent.Log(LogLevel.Warning, "DoMemoryTransfer[{0}]: Request size is 0. Skipping.", streamNo);
+                    return;
+                }
 
-                        parent.streamFinished[streamNo] = true;
-                        parent.Log(LogLevel.Debug, "DoTransfer: setting streamFinished[{0}] true : interruptOnComplete {1} numberOfData {2}", streamNo,
-                            interruptOnComplete, numberOfData);
-                        if (interruptOnComplete) parent.machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => IRQ.Set());
+                lock (parent.streamFinished)
+                {
+                    LogTransferRequest(request);
+                    parent.engine.IssueCopy(request);
+                    if (circular)
+                    {
+                        numberOfData = numberOfDataLatch;
+                        parent.Log(LogLevel.Debug, "DoMemoryTransfer: circular: reset numberOfData {0}", numberOfData);
                     }
+                    else
+                    {
+                        numberOfData -= request.Size / (int)peripheralTransferType;
+                        Enabled = false;
+                    }
+
+                    parent.streamFinished[streamNo] = true;
+                    parent.Log(LogLevel.Debug, "DoMemoryTransfer: setting streamFinished[{0}] true : interruptOnComplete {1} numberOfData {2}", streamNo,
+                        interruptOnComplete, numberOfData);
+                    if (interruptOnComplete) parent.machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => IRQ.Set());
+                }
             }
 
             public void DoPeripheralTransfer()
             {
-                parent.Log(LogLevel.Debug, "DoPeripheralTransfer: entry: memoryTransferType {0} transferredSize {1} direction {2}", (int)memoryTransferType,
-                    transferredSize, direction);
-                // NOTE: Since we are only called for P2M the
-                // transferredSize here is used as the
-                // "destinationOffset" index when incrementing the
-                // memory address
-                var request = CreateRequest((int)memoryTransferType, memoryIncrementAddress ? transferredSize : 0);
-                transferredSize += (int)memoryTransferType;
-                parent.Log(LogLevel.Debug, "DoPeripheralTransfer: request.Size {0} transferredSize {1} : numberOfData {2}", request.Size, transferredSize,
-                    numberOfData);
-                if (request.Size > 0)
-                    lock (parent.streamFinished)
-                    {
-                        parent.engine.IssueCopy(request);
-                        parent.Log(LogLevel.Debug,
-                            "DoPeripheralTransfer: request.Size {0} transferredSize {1} numberOfData {2}  peripheralTransferType {3} ({4})", request.Size,
-                            transferredSize, numberOfData, peripheralTransferType, numberOfData * (int)peripheralTransferType);
-                        // TODO:CONSIDER:OPTIMISE: We should be able
-                        // to cache the (numberOfData * (int)peripheralTransferType)
-                        // value when the DMA_SxCR is written since at
-                        // that point it is fixed; and it will avoid
-                        // the repeated multiplication operation here.
-                        if (transferredSize == numberOfData * (int)peripheralTransferType)
-                        {
-                            if (circular)
-                            {
-                                numberOfData = numberOfDataLatch;
-                                parent.Log(LogLevel.Debug, "DoPeripheralTransfer: circular: reset numberOfData {0}", numberOfData);
-                            }
-                            else
-                            {
-                                numberOfData -= transferredSize / (int)peripheralTransferType;
-                                Enabled = false;
-                            }
+                int transferSize;
+                int destinationOffset;
+                if (direction == Direction.PeripheralToMemory)
+                {
+                    transferSize = (int)memoryTransferType;
+                    destinationOffset = memoryIncrementAddress ? transferredSize : 0;
+                }
+                else
+                {
+                    transferSize = (int)peripheralTransferType;
+                    destinationOffset = peripheralIncrementAddress ? transferredSize : 0;
+                }
 
-                            parent.Log(LogLevel.Debug, "DoPeripheralTransfer: setting streamFinished[{0}] true : interruptOnComplete {1} numberOfData {2}",
-                                streamNo, interruptOnComplete, numberOfData);
-                            parent.streamFinished[streamNo] = true;
-                            transferredSize = 0;
-                            if (interruptOnComplete) parent.machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => IRQ.Set());
-                        }
+                var request = CreateRequest(transferSize, destinationOffset);
+                transferredSize += transferSize;
+                if (request.Size <= 0)
+                {
+                    parent.Log(LogLevel.Warning, "DoPeripheralTransfer[{0}]: Request size is 0. Skipping.", streamNo);
+                    return;
+                }
+
+                lock (parent.streamFinished)
+                {
+                    LogTransferRequest(request);
+                    parent.engine.IssueCopy(request);
+                    parent.Log(LogLevel.Debug,
+                        "DoPeripheralTransfer: request.Size {0} transferredSize {1} numberOfData {2}  peripheralTransferType {3} ({4})", request.Size,
+                        transferredSize, numberOfData, peripheralTransferType, numberOfData * (int)peripheralTransferType);
+
+                    var toTransferSize = numberOfData * transferSize;
+                    if (transferredSize != toTransferSize)
+                    {
+                        parent.Log(LogLevel.Debug, "DoPeripheralTransfer[{0}]: Transfer not finished yet {1}/{2}", streamNo, transferredSize, toTransferSize);
+                        return;
                     }
+
+                    if (circular)
+                    {
+                        numberOfData = numberOfDataLatch;
+                        parent.Log(LogLevel.Debug, "DoPeripheralTransfer: circular: reset numberOfData {0}", numberOfData);
+                    }
+                    else
+                    {
+                        numberOfData -= transferredSize / transferSize;
+                        Enabled = false;
+                    }
+
+                    parent.Log(LogLevel.Debug, "DoPeripheralTransfer[{0}]: Transfer finished -> {1} setting IRQ", streamNo, interruptOnComplete ? "" : "not");
+                    parent.streamFinished[streamNo] = true;
+                    transferredSize = 0;
+                    if (interruptOnComplete) parent.machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => IRQ.Set());
+                }
             }
 
             public void SelectTransfer()
             {
                 parent.Log(LogLevel.Debug, "SelectTransfer: direction {0}", direction);
 
-                if (direction == Direction.MemoryToMemory || direction == Direction.MemoryToPeripheral) DoTransfer();
+                if (direction == Direction.MemoryToMemory) DoMemoryTransfer();
 
-                if (direction == Direction.PeripheralToMemory) DoPeripheralTransfer();
+                if (direction == Direction.PeripheralToMemory || direction == Direction.MemoryToPeripheral) DoPeripheralTransfer();
             }
 
             private uint HandleConfigurationRead()
@@ -514,8 +505,8 @@ namespace Antmicro.Renode.Peripherals.DMA
                         "HandleConfigurationWrite:[{0}] Enabled : direction {1} DMARequest {2} numberOfData {3} memoryIncrementAddress {4} peripheralIncremenetAddress {5}",
                         streamNo, direction, DMARequest, numberOfData, memoryIncrementAddress, peripheralIncrementAddress);
 
-                    if (direction != Direction.PeripheralToMemory && DMARequest)
-                        DoTransfer();
+                    if (direction == Direction.MemoryToMemory && DMARequest)
+                        DoMemoryTransfer();
                     else
                         Enabled = true;
                 }
@@ -557,6 +548,35 @@ namespace Antmicro.Renode.Peripherals.DMA
 
                 throw new InvalidOperationException("Should not reach here.");
             }
+
+            private void LogTransferRequest(Request request)
+            {
+                parent.Log(LogLevel.Noisy,
+                    $"CopyRequest[{streamNo}]: Direction: {direction} Source: 0x{request.Source.Address:X}, Destination: 0x{request.Destination.Address:X}, " +
+                    $"Size: {request.Size}, ReadTransferType: {request.ReadTransferType}, WriteTransferType: {request.WriteTransferType}, " +
+                    $"IncrementReadAddress: {request.IncrementReadAddress}, IncrementWriteAddress: {request.IncrementWriteAddress}"
+                );
+            }
+
+            private readonly STM32DMA parent;
+            private readonly int streamNo;
+            private byte channel;
+            private bool circular;
+            private Direction direction;
+            private uint fifoControl;
+            private bool interruptOnComplete;
+
+            private uint memory0Address;
+            private uint memory1Address;
+            private bool memoryIncrementAddress;
+            private TransferType memoryTransferType;
+            private int numberOfData;
+            private int numberOfDataLatch;
+            private uint peripheralAddress;
+            private bool peripheralIncrementAddress;
+            private TransferType peripheralTransferType;
+            private byte priority;
+            private int transferredSize;
 
             private enum Registers
             {
