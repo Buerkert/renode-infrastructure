@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Utilities;
+using IronPython.Runtime.Operations;
 
 namespace Antmicro.Renode.Peripherals.I2C
 {
@@ -30,10 +31,10 @@ namespace Antmicro.Renode.Peripherals.I2C
             ErrorInterrupt = new GPIO();
             DMATransmit = new GPIO();
             DMAReceive = new GPIO();
-            EventInterrupt.AddStateChangedHook(b => this.NoisyLog("EventInterrupt set to {0}", b));
-            ErrorInterrupt.AddStateChangedHook(b => this.NoisyLog("ErrorInterrupt set to {0}", b));
-            DMATransmit.AddStateChangedHook(b => this.NoisyLog("DMATransmit set to {0}", b));
-            DMAReceive.AddStateChangedHook(b => this.NoisyLog("DMAReceive set to {0}", b));
+            EventInterrupt.AddStateChangedHook(b => this.Log(LogLevel.Noisy, "EventInterrupt set to {0}", b));
+            ErrorInterrupt.AddStateChangedHook(b => this.Log(LogLevel.Noisy, "ErrorInterrupt set to {0}", b));
+            DMATransmit.AddStateChangedHook(b => this.Log(LogLevel.Noisy, "DMATransmit set to {0}", b));
+            DMAReceive.AddStateChangedHook(b => this.Log(LogLevel.Noisy, "DMAReceive set to {0}", b));
             CreateRegisters();
             Reset();
         }
@@ -43,25 +44,18 @@ namespace Antmicro.Renode.Peripherals.I2C
         // We can't have this happen for the data register.
         public byte ReadByte(long offset)
         {
-            if (offset % 4 == 0)
-            {
-                return (byte)ReadDoubleWord(offset);
-            }
-
-            this.LogUnhandledRead(offset);
-            return 0;
+            var byteNum = (int)(offset % 4);
+            var val = ReadDoubleWord(offset - byteNum);
+            var shift = (byteNum * 8);
+            return (byte)(val >> shift);
         }
 
         public void WriteByte(long offset, byte value)
         {
             if (offset % 4 == 0)
-            {
                 WriteDoubleWord(offset, value);
-            }
             else
-            {
                 this.LogUnhandledWrite(offset, value);
-            }
         }
 
         public uint ReadDoubleWord(long offset)
@@ -79,7 +73,7 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         public override void Reset()
         {
-            state = State.Idle;
+            State = States.Idle;
             dataToReceive.Clear();
             dataToTransfer.Clear();
             EventInterrupt.Unset();
@@ -121,7 +115,7 @@ namespace Antmicro.Renode.Peripherals.I2C
                 .WithTaggedFlag("PEC", 12)
                 .WithTaggedFlag("ALERT", 13)
                 .WithReservedBits(14, 1)
-                .WithTaggedFlag("SWRST", 15);
+                .WithFlag(15, name: "SWRST", writeCallback: SoftwareResetWrite);
 
             Registers.Control2.Define(registers, name: "CR2")
                 .WithValueField(0, 6, name: "FREQ")
@@ -172,14 +166,14 @@ namespace Antmicro.Renode.Peripherals.I2C
                 .WithTaggedFlag("SMBALERT", 15)
                 .WithReadCallback((_, __) =>
                 {
-                    if (state != State.AwaitingSr1Read) return;
-                    state = State.AwaitingSr2Read;
-                    this.Log(LogLevel.Debug, "SR1 read: new state={0}", state);
+                    if (State != States.AwaitingSr1Read) return;
+                    State = States.AwaitingSr2Read;
+                    this.Log(LogLevel.Debug, "SR1 read: new state={0}", State);
                 });
 
             Registers.Status2.Define(registers, name: "SR2")
-                .WithFlag(0, FieldMode.Read, name: "MSL", valueProviderCallback: _ => state != State.Idle)
-                .WithFlag(1, FieldMode.Read, name: "BUSY", valueProviderCallback: _ => state != State.Idle)
+                .WithFlag(0, FieldMode.Read, name: "MSL", valueProviderCallback: _ => State != States.Idle)
+                .WithFlag(1, FieldMode.Read, name: "BUSY", valueProviderCallback: _ => State != States.Idle)
                 .WithFlag(2, out transmitterReceiver, FieldMode.Read, name: "TRA")
                 .WithReservedBits(3, 1)
                 .WithTaggedFlag("GENCALL", 4)
@@ -189,19 +183,19 @@ namespace Antmicro.Renode.Peripherals.I2C
                 .WithTag("PEC", 8, 8)
                 .WithReadCallback((_, __) =>
                 {
-                    if (state != State.AwaitingSr2Read) return;
+                    if (State != States.AwaitingSr2Read) return;
                     if (willReadOnSelectedSlave)
                     {
-                        state = State.ReceivingData;
+                        State = States.ReceivingData;
                         machine.LocalTimeSource.ExecuteInNearestSyncedState(___ => ReceiveDataFromSlave());
                     }
                     else
                     {
-                        state = State.AwaitingData;
+                        State = States.AwaitingData;
                         machine.LocalTimeSource.ExecuteInNearestSyncedState(___ => Update());
                     }
 
-                    this.Log(LogLevel.Debug, "SR2 read: new state={0}", state);
+                    this.Log(LogLevel.Debug, "SR2 read: new state={0}", State);
                 });
 
             Registers.ClockControl.Define(registers, name: "CCR")
@@ -222,7 +216,7 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private void InterruptEnableChange(bool oldValue, bool newValue)
         {
-            this.Log(LogLevel.Debug, "InterruptEnableChange: oldValue {0} newValue {1}", oldValue, newValue);
+            this.Log(LogLevel.Debug, "InterruptEnableChange: {0} -> {1}", oldValue, newValue);
             if (newValue)
             {
                 // force synchronisation when enabling interrupt source:
@@ -244,47 +238,43 @@ namespace Antmicro.Renode.Peripherals.I2C
                                 (bufferInterruptEnable.Value && (TxDataRegisterEmpty || RxDataRegisterNotEmpty))));
             ErrorInterrupt.Set(errorInterruptEnable.Value && acknowledgeFailed.Value);
             // Handle dma requests
-            DMAReceive.Set(dmaEnable.Value && RxDataRegisterNotEmpty && state == State.ReceivingData);
-            DMATransmit.Set(dmaEnable.Value && TxDataRegisterEmpty && state == State.AwaitingData);
+            DMAReceive.Set(dmaEnable.Value && RxDataRegisterNotEmpty && State == States.ReceivingData);
+            DMATransmit.Set(dmaEnable.Value && TxDataRegisterEmpty && State == States.AwaitingData);
         }
 
         private uint DataRead(uint oldValue)
         {
-            uint ret = 0;
-            switch (state)
+            if (State != States.ReceivingData)
             {
-                case State.ReceivingData:
-                    if (dataToReceive.Any())
-                    {
-                        ret = dataToReceive.Dequeue();
-                        Update();
-                        machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => ReceiveDataFromSlave());
-                    }
-                    else
-                        this.Log(LogLevel.Warning, "DataRead: no data to receive");
-
-                    break;
-                default:
-                    this.Log(LogLevel.Warning, "DataRead: reading in unsupported state {0}.", state);
-                    break;
+                this.Log(LogLevel.Warning, "DataRead: reading in unsupported state {0} -> returning 0", State);
+                return 0;
             }
 
-            this.NoisyLog("DataRead: returning 0x{0:X}", ret);
+            if (!dataToReceive.Any())
+            {
+                this.Log(LogLevel.Warning, "DataRead: no data to receive -> returning 0");
+                return 0;
+            }
+
+            var ret = dataToReceive.Dequeue();
+            this.Log(LogLevel.Noisy, "DataRead: dequeued 0x{0:X}", ret);
+            Update();
+            machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => ReceiveDataFromSlave());
             return ret;
         }
 
         private void DataWrite(uint oldValue, uint newValue)
         {
-            switch (state)
+            switch (State)
             {
-                case State.AwaitingAddress:
+                case States.AwaitingAddress:
                     startBit.Value = false;
                     willReadOnSelectedSlave = (newValue & 1) == 1; //LSB is 1 for read and 0 for write
                     var address = (int)(newValue >> 1);
                     if (ChildCollection.TryGetValue(address, out selectedSlave))
                     {
                         transmitterReceiver.Value = !willReadOnSelectedSlave; //true when transmitting
-                        state = State.AwaitingSr1Read;
+                        State = States.AwaitingSr1Read;
                         if (willReadOnSelectedSlave)
                             dataToReceive.Clear();
                         else
@@ -295,13 +285,13 @@ namespace Antmicro.Renode.Peripherals.I2C
                     else
                     {
                         this.Log(LogLevel.Warning, "DataWrite: no child for address 0x{0:X} : set state Idle", address);
-                        state = State.Idle;
+                        State = States.Idle;
                         acknowledgeFailed.Value = true;
                     }
 
                     machine.LocalTimeSource.ExecuteInNearestSyncedState(_ => Update());
                     break;
-                case State.AwaitingData:
+                case States.AwaitingData:
                     this.Log(LogLevel.Debug, "DataWrite: queueing 0x{0:X} for transmission", newValue);
                     dataToTransfer.Add((byte)newValue);
                     Update();
@@ -309,31 +299,30 @@ namespace Antmicro.Renode.Peripherals.I2C
                     break;
                 default:
                     this.Log(LogLevel.Warning, "Writing 0x{0:X} to DataRegister in unsupported state {1}.", newValue,
-                        state);
+                        State);
                     break;
             }
         }
 
         private void SoftwareResetWrite(bool oldValue, bool newValue)
         {
-            if (newValue)
-            {
-                Reset();
-            }
+            if (!newValue) return;
+            this.Log(LogLevel.Noisy, "SoftwareResetWrite: set to true in state {0} -> performing reset", State);
+            Reset();
         }
 
         private void StopWrite(bool oldValue, bool newValue)
         {
-            this.NoisyLog("Setting STOP bit to {0} when state {1}", newValue, state);
-            if (!newValue)
-                return;
-            if (state != State.Idle && state != State.AwaitingAddress)
+            if (!newValue) return;
+
+            this.Log(LogLevel.Debug, "StopWrite: set to true in state {0}", State);
+            if (State != States.Idle && State != States.AwaitingAddress)
             {
                 this.Log(LogLevel.Debug, "StopWrite: sending finsh transmission to slave");
                 selectedSlave.FinishTransmission();
             }
 
-            state = State.Idle;
+            State = States.Idle;
             dataToReceive.Clear();
             dataToTransfer.Clear();
             this.Log(LogLevel.Debug, "StopWrite: byteTransferFinished set {0} dataRegisterEmpty set {1}",
@@ -343,11 +332,10 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private void StartWrite(bool oldValue, bool newValue)
         {
-            this.Log(LogLevel.Debug, "StartWrite: oldValue {0} newValue {1} : state {2}", oldValue, newValue, state);
-            if (!newValue)
-                return;
+            if (!newValue) return;
 
-            if (state != State.Idle && state != State.AwaitingAddress)
+            this.Log(LogLevel.Debug, "StartWrite: set to true in state {0}", State);
+            if (State != States.Idle && State != States.AwaitingAddress)
             {
                 this.Log(LogLevel.Debug, "StartWrite: repeated start condition");
                 selectedSlave.FinishTransmission();
@@ -358,28 +346,25 @@ namespace Antmicro.Renode.Peripherals.I2C
             startBit.Value = true;
             dataToReceive.Clear();
             dataToTransfer.Clear();
-            this.Log(LogLevel.Debug, "StartWrite: state {0}", state);
-            state = State.AwaitingAddress;
+            this.Log(LogLevel.Debug, "StartWrite: state {0}", State);
+            State = States.AwaitingAddress;
             Update();
         }
 
         private void PeripheralEnableWrite(bool oldValue, bool newValue)
         {
-            this.Log(LogLevel.Debug, "PeripheralEnableWrite: oldValue {0} newValue {1} : state {2}", oldValue, newValue,
-                state);
-            if (!newValue)
-            {
-                acknowledgeEnable.Value = false;
-                acknowledgeFailed.Value = false;
-                transmitterReceiver.Value = false;
-                Update();
-            }
+            if (newValue) return;
+            this.Log(LogLevel.Debug, "PeripheralEnableWrite: set to false in state {0}", State);
+            acknowledgeEnable.Value = false;
+            acknowledgeFailed.Value = false;
+            transmitterReceiver.Value = false;
+            Update();
         }
 
         private void SendDataToSlave()
         {
-            this.Log(LogLevel.Debug, "SendDataToSlave: state={0}", state);
-            if (state != State.AwaitingData)
+            this.Log(LogLevel.Noisy, "SendDataToSlave: in state {0}", State);
+            if (State != States.AwaitingData)
             {
                 this.Log(LogLevel.Warning, "SendDataToSlave: state is not AwaitingData");
                 return;
@@ -398,7 +383,7 @@ namespace Antmicro.Renode.Peripherals.I2C
             }
 
             var data = dataToTransfer.ToArray();
-            this.NoisyLog("SendDataToSlave: sending to slave {0}", data);
+            this.Log(LogLevel.Noisy, "SendDataToSlave: sending to slave [{0}]", ", ".join(data.Select(x => "0x" + x.ToString("X"))));
             selectedSlave.Write(data);
             dataToTransfer.Clear();
             Update();
@@ -406,8 +391,8 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private void ReceiveDataFromSlave()
         {
-            this.Log(LogLevel.Debug, "ReceiveDataFromSlave: state={0}", state);
-            if (state != State.ReceivingData)
+            this.Log(LogLevel.Debug, "ReceiveDataFromSlave: in state {0}", State);
+            if (State != States.ReceivingData)
             {
                 this.Log(LogLevel.Warning, "ReceiveDataFromSlave: state is not ReceivingData");
                 return;
@@ -420,20 +405,31 @@ namespace Antmicro.Renode.Peripherals.I2C
             }
 
             var data = selectedSlave.Read();
-            this.NoisyLog("ReceiveDataFromSlave: slave returned {0}", data);
+            this.Log(LogLevel.Noisy, "ReceiveDataFromSlave: slave returned [{0}]", ", ".join(data.Select(x => "0x" + x.ToString("X"))));
             dataToReceive.EnqueueRange(data);
             Update();
         }
 
-        private bool AddressSendOrMatched => state == State.AwaitingSr1Read || state == State.AwaitingSr2Read;
+        private States State
+        {
+            get => _state;
+            set
+            {
+                if (_state == value) return;
+                this.Log(LogLevel.Debug, "State changed: {0} -> {1}", _state, value);
+                _state = value;
+            }
+        }
 
-        private bool TxDataRegisterEmpty => state == State.AwaitingData && dataToTransfer.Count == 0 ||
-                                            (!willReadOnSelectedSlave && (state == State.AwaitingSr1Read ||
-                                                                          state == State.AwaitingSr2Read));
+        private bool AddressSendOrMatched => State == States.AwaitingSr1Read || State == States.AwaitingSr2Read;
 
-        private bool RxDataRegisterNotEmpty => state == State.ReceivingData && dataToReceive.Count > 0;
+        private bool TxDataRegisterEmpty => State == States.AwaitingData && dataToTransfer.Count == 0 ||
+                                            (!willReadOnSelectedSlave && (State == States.AwaitingSr1Read ||
+                                                                          State == States.AwaitingSr2Read));
 
-        private bool ByteTransferFinished => (state == State.AwaitingData || state == State.ReceivingData) &&
+        private bool RxDataRegisterNotEmpty => State == States.ReceivingData && dataToReceive.Count > 0;
+
+        private bool ByteTransferFinished => (State == States.AwaitingData || State == States.ReceivingData) &&
                                              (willReadOnSelectedSlave ? RxDataRegisterNotEmpty : TxDataRegisterEmpty);
 
         private IFlagRegisterField acknowledgeEnable;
@@ -448,7 +444,7 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         private DoubleWordRegisterCollection registers;
 
-        private State state;
+        private States _state;
         private List<byte> dataToTransfer;
         private Queue<byte> dataToReceive;
         private bool willReadOnSelectedSlave;
@@ -468,7 +464,7 @@ namespace Antmicro.Renode.Peripherals.I2C
             NoiseFilter = 0x24,
         }
 
-        private enum State
+        private enum States
         {
             Idle,
             AwaitingAddress,
