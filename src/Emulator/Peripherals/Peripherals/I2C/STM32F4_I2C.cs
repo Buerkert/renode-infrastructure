@@ -18,6 +18,23 @@ using Antmicro.Renode.Utilities;
 
 namespace Antmicro.Renode.Peripherals.I2C
 {
+    /// <summary>
+    /// Implementation of the STM32F4 I2C peripheral.
+    /// </summary>
+    /// <remarks>
+    /// TODO: not implemented features
+    ///     - DMA last transfer bit
+    ///     - POS bit for 2-byte reception
+    ///     - 10-bit addressing
+    ///     - I2C slave mode
+    ///     - PEC calculation
+    ///     - SMBus support
+    /// 
+    /// Further limitations:
+    ///     - Clock config is ignored and packet transfer happens as fast as possible
+    ///     - General call due to II2CPeripheral interface limitations not possible
+    ///     - Hardware specific features like noise filter and rise time are not supported
+    /// </remarks>
     [AllowedTranslations(AllowedTranslation.WordToDoubleWord)]
     public sealed class STM32F4_I2C : SimpleContainer<II2CPeripheral>, IDoubleWordPeripheral, IBytePeripheral,
         IKnownSize
@@ -60,13 +77,13 @@ namespace Antmicro.Renode.Peripherals.I2C
         public uint ReadDoubleWord(long offset)
         {
             var rval = registers.Read(offset);
-            this.Log(LogLevel.Debug, "ReadDoubleWord: offset 0x{0:X} : rval 0x{1:X}", offset, rval);
+            this.Log(LogLevel.Noisy, "ReadDoubleWord[{0}]: rval=0x{1:X}", (Registers)offset, rval);
             return rval;
         }
 
         public void WriteDoubleWord(long offset, uint value)
         {
-            this.Log(LogLevel.Debug, "WriteDoubleWord: offset 0x{0:X} value 0x{1:X}", offset, value);
+            this.Log(LogLevel.Noisy, "WriteDoubleWord[{0}]: value=0x{1:X}", (Registers)offset, value);
             registers.Write(offset, value);
         }
 
@@ -108,8 +125,6 @@ namespace Antmicro.Renode.Peripherals.I2C
                 .WithFlag(8, FieldMode.Read, name: "START", writeCallback: StartWrite)
                 .WithFlag(9, FieldMode.Read, name: "STOP", writeCallback: StopWrite)
                 .WithFlag(10, out acknowledgeEnable, name: "ACK")
-                // CONSIDER: support for I2C_CR1:POS (bit11) // POS only relevant for 2-byte reception
-                // The I2C_CR1:POS setting indicates whether CURRENT byte being received or NEXT byte being received
                 .WithTaggedFlag("POS", 11)
                 .WithTaggedFlag("PEC", 12)
                 .WithTaggedFlag("ALERT", 13)
@@ -122,9 +137,7 @@ namespace Antmicro.Renode.Peripherals.I2C
                 .WithFlag(8, out errorInterruptEnable, name: "ITERREN")
                 .WithFlag(9, out eventInterruptEnable, name: "ITEVTEN", changeCallback: InterruptEnableChange)
                 .WithFlag(10, out bufferInterruptEnable, name: "ITBUFEN", changeCallback: InterruptEnableChange)
-                // 0 == DMA requests disabled; 1 == DMA request enabled when TxE==1 or RxNE==1
                 .WithFlag(11, out dmaEnable, name: "DMAEN", changeCallback: (_, __) => Update())
-                // 0 == Next DMA EOT is NOT last transfer; 1 == Next DMA EOT is the last transfer
                 .WithFlag(12, out dmaLastTransfer, name: "DMALAST")
                 .WithReservedBits(13, 3);
 
