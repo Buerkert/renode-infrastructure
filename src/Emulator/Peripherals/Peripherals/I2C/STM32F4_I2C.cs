@@ -47,10 +47,6 @@ namespace Antmicro.Renode.Peripherals.I2C
             ErrorInterrupt = new GPIO();
             DMATransmit = new GPIO();
             DMAReceive = new GPIO();
-            EventInterrupt.AddStateChangedHook(b => this.Log(LogLevel.Noisy, "EventInterrupt set to {0}", b));
-            ErrorInterrupt.AddStateChangedHook(b => this.Log(LogLevel.Noisy, "ErrorInterrupt set to {0}", b));
-            DMATransmit.AddStateChangedHook(b => this.Log(LogLevel.Noisy, "DMATransmit set to {0}", b));
-            DMAReceive.AddStateChangedHook(b => this.Log(LogLevel.Noisy, "DMAReceive set to {0}", b));
             CreateRegisters();
             Reset();
         }
@@ -76,14 +72,11 @@ namespace Antmicro.Renode.Peripherals.I2C
 
         public uint ReadDoubleWord(long offset)
         {
-            var rval = registers.Read(offset);
-            this.Log(LogLevel.Noisy, "ReadDoubleWord[{0}]: rval=0x{1:X}", (Registers)offset, rval);
-            return rval;
+            return registers.Read(offset);
         }
 
         public void WriteDoubleWord(long offset, uint value)
         {
-            this.Log(LogLevel.Noisy, "WriteDoubleWord[{0}]: value=0x{1:X}", (Registers)offset, value);
             registers.Write(offset, value);
         }
 
@@ -258,7 +251,7 @@ namespace Antmicro.Renode.Peripherals.I2C
         {
             if (State != States.ReceivingData)
             {
-                this.Log(LogLevel.Warning, "DataRead: reading in unsupported state {0} -> returning 0", State);
+                this.Log(LogLevel.Info, "DataRead: reading in unsupported state {0} -> returning 0", State);
                 return 0;
             }
 
@@ -291,7 +284,7 @@ namespace Antmicro.Renode.Peripherals.I2C
                             dataToReceive.Clear();
                         else
                             dataToTransfer.Clear();
-                        this.Log(LogLevel.Debug, "DataWrite: child for address 0x{0:X} for {1} found", address,
+                        this.Log(LogLevel.Debug, "DataWrite: slave '{0}' at address 0x{1:X} for {2} found", selectedSlave.GetName(), address,
                             willReadOnSelectedSlave ? "reads" : "writes");
                     }
                     else
