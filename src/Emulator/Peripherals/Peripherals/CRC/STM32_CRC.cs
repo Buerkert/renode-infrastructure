@@ -159,11 +159,12 @@ namespace Antmicro.Renode.Peripherals.CRC
 
         private void UpdateCRC(uint value, int bytesCount)
         {
-            if(reverseInputData.Value == BitReversal.ByByte)
+            var bitReversal = reverseInputData?.Value ?? BitReversal.Disabled;
+            if(bitReversal == BitReversal.ByByte)
             {
                 value = BitHelper.ReverseBitsByByte(value);
             }
-            else if(reverseInputData.Value == BitReversal.ByWord)
+            else if(bitReversal == BitReversal.ByWord)
             {
                 switch(bytesCount)
                 {
@@ -176,7 +177,7 @@ namespace Antmicro.Renode.Peripherals.CRC
                         break;
                 }
             }
-            else if(reverseInputData.Value == BitReversal.ByDoubleWord)
+            else if(bitReversal == BitReversal.ByDoubleWord)
             {
                 switch(bytesCount)
                 {
