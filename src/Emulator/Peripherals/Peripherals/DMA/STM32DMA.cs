@@ -125,7 +125,7 @@ namespace Antmicro.Renode.Peripherals.DMA
                 streams[number].SelectTransfer();
             else
                 // Not really a WARNING since DMA transfer request is just ignored if DMA stream not enabled
-                this.Log(LogLevel.Info, "DMA peripheral request on stream {0} ignored", number);
+                this.Log(LogLevel.Debug, "DMA peripheral request on stream {0} ignored", number);
         }
 
         public long Size => 0x400;
