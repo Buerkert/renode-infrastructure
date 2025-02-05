@@ -251,7 +251,7 @@ namespace Antmicro.Renode.Peripherals.I2C
         {
             if (State != States.ReceivingData)
             {
-                this.Log(LogLevel.Info, "DataRead: reading in unsupported state {0} -> returning 0", State);
+                this.Log(LogLevel.Debug, "DataRead: reading in unsupported state {0} -> returning 0", State);
                 return 0;
             }
 
