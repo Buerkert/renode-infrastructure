@@ -5,6 +5,7 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
+
 using System;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Bus;
@@ -24,20 +25,21 @@ namespace Antmicro.Renode.Peripherals.CAN
             // Register master CAN
             this.master = master;
 
-            for(int i = 0; i < NumberOfRxFifos; i++)
+            for (int i = 0; i < NumberOfRxFifos; i++)
             {
                 RxFifo[i] = new Queue<CANMessage>();
-                if(!IsSlave)
+                if (!IsSlave)
                 {
                     FifoFiltersPrioritized[i] = new List<FilterBank>();
                 }
             }
 
             var innerConnections = new Dictionary<int, IGPIO>();
-            for(int i = 0; i < NumberOfInterruptLines; i++)
+            for (int i = 0; i < NumberOfInterruptLines; i++)
             {
                 innerConnections[i] = new GPIO();
             }
+
             Connections = new ReadOnlyDictionary<int, IGPIO>(innerConnections);
 
             registers = new DeviceRegisters();
@@ -51,24 +53,26 @@ namespace Antmicro.Renode.Peripherals.CAN
             registers.CAN_RFR[RxFifo1].UpdateInterruptLine =
                 new UpdateInterruptLine(UpdateFifo1InterruptLine);
 
-            if(!IsSlave)
+            if (!IsSlave)
             {
                 FilterBanks = new FilterBank[NumberOfFilterBanks];
-                for(int i = 0; i < NumberOfFilterBanks; i++)
+                for (int i = 0; i < NumberOfFilterBanks; i++)
                 {
                     FilterBanks[i] = new FilterBank();
                 }
             }
             else
             {
-                if(master.FilterBanks == null)
+                if (master.FilterBanks == null)
                 {
                     throw new ConstructionException("You need to construct the master first.");
                 }
-                if(master.IsSlave)
+
+                if (master.IsSlave)
                 {
                     throw new ConstructionException("The master of this peripheral cannot be a slave to another master.");
                 }
+
                 FilterBanks = master.FilterBanks;
                 FifoFiltersPrioritized = master.FifoFiltersPrioritized;
                 registers.CAN_FMR = master.registers.CAN_FMR;
@@ -85,47 +89,50 @@ namespace Antmicro.Renode.Peripherals.CAN
 
         public void OnFrameReceived(CANMessageFrame message)
         {
-            if(registers.CAN_MCR.SleepRequest == true)
+            if (registers.CAN_MCR.SleepRequest == true)
             {
                 // Wake up if autowake up is on
-                if(registers.CAN_MCR.AutoWakeUpMode == true)
+                if (registers.CAN_MCR.AutoWakeUpMode == true)
                 {
                     registers.CAN_MCR.SleepRequest = false;
                     registers.CAN_MSR.SleepAck = false;
                 }
+
                 // Signal wake up interrupt
                 registers.CAN_MSR.WakeupInterrupt = true;
                 UpdateSCEInterruptLine();
             }
-            else if(registers.CAN_BTR.LoopbackMode == false)
+            else if (registers.CAN_BTR.LoopbackMode == false)
             {
                 CANMessage RxMsg = new CANMessage(message);
-                for(int fifo = 0; fifo < NumberOfRxFifos; fifo++)
+                for (int fifo = 0; fifo < NumberOfRxFifos; fifo++)
                 {
-                    if(FilterCANMessage(fifo, RxMsg) == true)
+                    if (FilterCANMessage(fifo, RxMsg) == true)
                     {
                         this.Log(LogLevel.Debug, "Message received RIR={0:X}", message.Id);
                         ReceiveCANMessage(RxMsg);
                     }
                     else
                     {
-                       this.Log(LogLevel.Debug, "Message dropped by filter RIR={0:X}", message.Id);
+                        this.Log(LogLevel.Debug, "Message dropped by filter RIR={0:X}", message.Id);
                     }
                 }
             }
+
             FrameReceived?.Invoke((int)message.Id, message.Data);
         }
 
-        public void WriteDoubleWord(long address, uint value)  // cpu do per
+        public void WriteDoubleWord(long address, uint value) // cpu do per
         {
-            if(IsSlave && AddressIsWithinFilterRegistersArea(address))
+            if (IsSlave && AddressIsWithinFilterRegistersArea(address))
             {
-                this.Log(LogLevel.Warning, "Trying to access slave's filter registers, but the slave has to be configured via master's filters. This change has no effect.");
+                this.Log(LogLevel.Warning,
+                    "Trying to access slave's filter registers, but the slave has to be configured via master's filters. This change has no effect.");
                 return;
             }
 
             // Filter bank registers
-            if((registerOffset)address >= registerOffset.CAN_F0R1 &&
+            if ((registerOffset)address >= registerOffset.CAN_F0R1 &&
                 (registerOffset)address <= registerOffset.CAN_F27R2)
             {
                 int bankIdx = AddressToFilterBankIdx(address);
@@ -133,17 +140,18 @@ namespace Antmicro.Renode.Peripherals.CAN
                 // The filter bank registers can only be written if
                 // CAN_FMR.FINIT is true or the FA1R has FACtx cleared
                 // (the filter is disabled)
-                if(registers.CAN_FMR.FilterInitMode == true ||
+                if (registers.CAN_FMR.FilterInitMode == true ||
                     registers.CAN_FA1R.FilterActive(bankIdx) == false)
                 {
                     int regIdx = AddressToRegIdx(address);
                     //registers.CAN_FiRx[RegIdx] = value;
                     FilterBanks[bankIdx].FR[regIdx] = value;
                 }
+
                 return;
             }
 
-            switch((registerOffset)address)
+            switch ((registerOffset)address)
             {
                 case registerOffset.CAN_MSR:
                     registers.CAN_MSR.SetValue(value);
@@ -152,15 +160,15 @@ namespace Antmicro.Renode.Peripherals.CAN
                 case registerOffset.CAN_MCR:
                     registers.CAN_MCR.SetValue(value);
 
-                    if(registers.CAN_MCR.InitRequest == true &&
-                       registers.CAN_MCR.SleepRequest == false)
+                    if (registers.CAN_MCR.InitRequest == true &&
+                        registers.CAN_MCR.SleepRequest == false)
                     {
                         // Enter initialisation mode
                         registers.CAN_MSR.InitAck = true;
                         registers.CAN_MSR.SleepAck = false;
                     }
-                    else if(registers.CAN_MCR.SleepRequest == true &&
-                            registers.CAN_MCR.InitRequest == false)
+                    else if (registers.CAN_MCR.SleepRequest == true &&
+                             registers.CAN_MCR.InitRequest == false)
                     {
                         // Enter sleep mode
                         registers.CAN_MSR.SleepAck = true;
@@ -175,7 +183,7 @@ namespace Antmicro.Renode.Peripherals.CAN
                         registers.CAN_MSR.InitAck = false;
                     }
 
-                    if(registers.CAN_MCR.Reset == true)
+                    if (registers.CAN_MCR.Reset == true)
                     {
                         registers.Reset();
                     }
@@ -209,10 +217,11 @@ namespace Antmicro.Renode.Peripherals.CAN
                     return;
 
                 case registerOffset.CAN_BTR:
-                    if(registers.CAN_MSR.InitAck == true)
+                    if (registers.CAN_MSR.InitAck == true)
                     {
                         registers.CAN_BTR.SetValue(value);
                     }
+
                     return;
 
                 // Filter registers
@@ -221,68 +230,74 @@ namespace Antmicro.Renode.Peripherals.CAN
                     UpdateFilterCANAssignment();
                     return;
                 case registerOffset.CAN_FM1R:
-                    if(registers.CAN_FMR.FilterInitMode == true)
+                    if (registers.CAN_FMR.FilterInitMode == true)
                     {
                         registers.CAN_FM1R.SetValue(value);
-                        for(int i = 0; i < NumberOfFilterBanks; i++)
+                        for (int i = 0; i < NumberOfFilterBanks; i++)
                         {
                             FilterBanks[i].Mode =
                                 registers.CAN_FM1R.FilterMode(i);
                         }
                     }
+
                     return;
                 case registerOffset.CAN_FS1R:
-                    if(registers.CAN_FMR.FilterInitMode == true)
+                    if (registers.CAN_FMR.FilterInitMode == true)
                     {
                         registers.CAN_FS1R.SetValue(value);
-                        for(int i = 0; i < NumberOfFilterBanks; i++)
+                        for (int i = 0; i < NumberOfFilterBanks; i++)
                         {
                             FilterBanks[i].Scale =
                                 registers.CAN_FS1R.FilterScale(i);
                         }
                     }
+
                     return;
                 case registerOffset.CAN_FFA1R:
-                    if(registers.CAN_FMR.FilterInitMode == true)
+                    if (registers.CAN_FMR.FilterInitMode == true)
                     {
                         registers.CAN_FFA1R.SetValue(value);
-                        for(int i = 0; i < NumberOfFilterBanks; i++)
+                        for (int i = 0; i < NumberOfFilterBanks; i++)
                         {
                             FilterBanks[i].FifoAssignment =
                                 registers.CAN_FFA1R.FifoAssignment(i);
                         }
                     }
+
                     return;
                 case registerOffset.CAN_FA1R:
                     registers.CAN_FA1R.SetValue(value);
-                    for(int i = 0; i < NumberOfFilterBanks; i++)
+                    for (int i = 0; i < NumberOfFilterBanks; i++)
                     {
                         FilterBanks[i].Active =
                             registers.CAN_FA1R.FilterActive(i);
                     }
-                    for(uint fifo = 0; fifo < NumberOfRxFifos; fifo++)
+
+                    for (uint fifo = 0; fifo < NumberOfRxFifos; fifo++)
                     {
                         PrioritizeFiFoFilters(fifo);
                     }
+
                     return;
 
                 // TX mailbox 0
                 case registerOffset.CAN_TI0R:
                     registers.CAN_TI0R.SetValue(value);
-                    if(registers.CAN_TI0R.TransmitMailboxRequest(value) == true)
+                    if (registers.CAN_TI0R.TransmitMailboxRequest(value) == true)
                     {
                         // Transmit data
                         // registers.CAN_TDT0R = timestamp_me; FIXME
                         CANMessage TxMsg = new CANMessage(registers.CAN_TI0R.GetValue(),
-                                                              registers.CAN_TDT0R,
-                                                              registers.CAN_TDL0R,
-                                                              registers.CAN_TDH0R);
+                            registers.CAN_TDT0R,
+                            registers.CAN_TDL0R,
+                            registers.CAN_TDH0R);
                         TransmitData(TxMsg);
 
                         // Transmition done
                         registers.CAN_TSR.TxMailbox0Done();
                         UpdateTransmitInterruptLine();
                     }
+
                     return;
                 case registerOffset.CAN_TDT0R:
                     registers.CAN_TDT0R = value;
@@ -297,20 +312,21 @@ namespace Antmicro.Renode.Peripherals.CAN
                 // TX mailbox 1
                 case registerOffset.CAN_TI1R:
                     registers.CAN_TI1R.SetValue(value);
-                    if(registers.CAN_TI1R.TransmitMailboxRequest(value) == true)
+                    if (registers.CAN_TI1R.TransmitMailboxRequest(value) == true)
                     {
                         // Transmit data
                         // registers.CAN_TDT1R = timestamp_me; FIXME
                         CANMessage TxMsg = new CANMessage(registers.CAN_TI1R.GetValue(),
-                                                              registers.CAN_TDT1R,
-                                                              registers.CAN_TDL1R,
-                                                              registers.CAN_TDH1R);
+                            registers.CAN_TDT1R,
+                            registers.CAN_TDL1R,
+                            registers.CAN_TDH1R);
                         TransmitData(TxMsg);
 
                         // Transmition done
                         registers.CAN_TSR.TxMailbox1Done();
                         UpdateTransmitInterruptLine();
                     }
+
                     return;
                 case registerOffset.CAN_TDT1R:
                     registers.CAN_TDT1R = value;
@@ -325,20 +341,21 @@ namespace Antmicro.Renode.Peripherals.CAN
                 // TX mailbox 2
                 case registerOffset.CAN_TI2R:
                     registers.CAN_TI2R.SetValue(value);
-                    if(registers.CAN_TI2R.TransmitMailboxRequest(value) == true)
+                    if (registers.CAN_TI2R.TransmitMailboxRequest(value) == true)
                     {
                         // Transmit data
                         // registers.CAN_TDT2R = timestamp_me; FIXME
                         CANMessage TxMsg = new CANMessage(registers.CAN_TI2R.GetValue(),
-                                                              registers.CAN_TDT2R,
-                                                              registers.CAN_TDL2R,
-                                                              registers.CAN_TDH2R);
+                            registers.CAN_TDT2R,
+                            registers.CAN_TDL2R,
+                            registers.CAN_TDH2R);
                         TransmitData(TxMsg);
 
                         // Transmition done
                         registers.CAN_TSR.TxMailbox2Done();
                         UpdateTransmitInterruptLine();
                     }
+
                     return;
                 case registerOffset.CAN_TDT2R:
                     registers.CAN_TDT2R = value;
@@ -357,9 +374,9 @@ namespace Antmicro.Renode.Peripherals.CAN
 
         public void TransmitData(CANMessage msg)
         {
-            if(registers.CAN_BTR.SilentMode == false)
+            if (registers.CAN_BTR.SilentMode == false)
             {
-                if(FrameSent != null)
+                if (FrameSent != null)
                 {
                     // Message frame created with receive identifier register
                     // value because filtering can be implemented on bits other
@@ -373,11 +390,12 @@ namespace Antmicro.Renode.Peripherals.CAN
                     UpdateSCEInterruptLine();
                 }
             }
-            if(registers.CAN_BTR.LoopbackMode == true)
+
+            if (registers.CAN_BTR.LoopbackMode == true)
             {
-                for(int fifo = 0; fifo < NumberOfRxFifos; fifo++)
+                for (int fifo = 0; fifo < NumberOfRxFifos; fifo++)
                 {
-                    if(FilterCANMessage(fifo, msg) == true)
+                    if (FilterCANMessage(fifo, msg) == true)
                     {
                         ReceiveCANMessage(msg);
                     }
@@ -392,9 +410,9 @@ namespace Antmicro.Renode.Peripherals.CAN
             FifoFiltersPrioritized[Fifo].Clear();
 
             // Enumarate Fifo filters and add to priolist
-            for(int i = 0; i < NumberOfFilterBanks; i++)
+            for (int i = 0; i < NumberOfFilterBanks; i++)
             {
-                if(FilterBanks[i].FifoAssignment == Fifo)
+                if (FilterBanks[i].FifoAssignment == Fifo)
                 {
                     FilterBanks[i].FirstFilterNumber = FirstFilterNumber;
                     FirstFilterNumber += FilterBanks[i].NumberOfFiltersInBank();
@@ -408,7 +426,7 @@ namespace Antmicro.Renode.Peripherals.CAN
 
         public void UpdateFilterCANAssignment()
         {
-            for(var i = 0; i < NumberOfFilterBanks; i++)
+            for (var i = 0; i < NumberOfFilterBanks; i++)
             {
                 FilterBanks[i].BelongsToMaster = i < registers.CAN_FMR.CAN2StartBank;
             }
@@ -416,25 +434,26 @@ namespace Antmicro.Renode.Peripherals.CAN
 
         public bool FilterCANMessage(int RxFifo, CANMessage msg)
         {
-            foreach(FilterBank filterBank in FifoFiltersPrioritized[RxFifo].Where(m => m.BelongsToMaster == !IsSlave))
+            foreach (FilterBank filterBank in FifoFiltersPrioritized[RxFifo].Where(m => m.BelongsToMaster == !IsSlave))
             {
-                if(filterBank.Active == true &&
-                        filterBank.MatchMessage(msg) == true)
+                if (filterBank.Active == true &&
+                    filterBank.MatchMessage(msg) == true)
                 {
                     return true;
                 }
             }
+
             return false;
         }
 
         public void ReceiveCANMessage(CANMessage msg)
         {
-            if(msg.RxFifo < NumberOfRxFifos)
+            if (msg.RxFifo < NumberOfRxFifos)
             {
                 bool LockedMode = registers.CAN_MCR.RxFifoLockedMode;
                 registers.CAN_RFR[msg.RxFifo].ReceiveMessage(msg, LockedMode);
 
-                if(registers.CAN_RFR[msg.RxFifo].UpdateInterruptLine != null)
+                if (registers.CAN_RFR[msg.RxFifo].UpdateInterruptLine != null)
                 {
                     registers.CAN_RFR[msg.RxFifo].UpdateInterruptLine();
                 }
@@ -444,7 +463,7 @@ namespace Antmicro.Renode.Peripherals.CAN
         public void UpdateTransmitInterruptLine()
         {
             // Transmit interrupt
-            if(EnableTransmitInterrupt() == true)
+            if (EnableTransmitInterrupt() == true)
             {
                 Connections[CAN_Tx].Set();
             }
@@ -459,7 +478,7 @@ namespace Antmicro.Renode.Peripherals.CAN
         public void UpdateFifo0InterruptLine()
         {
             // Fifo0 interrupt
-            if(EnableFifo0Interrupt() == true)
+            if (EnableFifo0Interrupt() == true)
             {
                 Connections[CAN_Rx0].Set();
             }
@@ -472,7 +491,7 @@ namespace Antmicro.Renode.Peripherals.CAN
         public void UpdateFifo1InterruptLine()
         {
             // Fifo1 interrupt
-            if(EnableFifo1Interrupt() == true)
+            if (EnableFifo1Interrupt() == true)
             {
                 Connections[CAN_Rx1].Set();
             }
@@ -485,7 +504,7 @@ namespace Antmicro.Renode.Peripherals.CAN
         public void UpdateSCEInterruptLine()
         {
             // Error and status change interrupt
-            if(EnableSCEInterrupt() == true)
+            if (EnableSCEInterrupt() == true)
             {
                 Connections[CAN_SCE].Set();
             }
@@ -497,104 +516,118 @@ namespace Antmicro.Renode.Peripherals.CAN
 
         public bool EnableTransmitInterrupt()
         {
-            if(registers.CAN_IER.TMEInterruptEnabled == true &&
+            if (registers.CAN_IER.TMEInterruptEnabled == true &&
                 registers.CAN_TSR.MailboxRequestCompleted() == true)
             {
                 return true;
             }
+
             return false;
         }
 
         public bool EnableFifo0Interrupt()
         {
             // Check pending message
-            if(registers.CAN_IER.FMP0InterruptEnabled == true &&
+            if (registers.CAN_IER.FMP0InterruptEnabled == true &&
                 registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
             {
                 return true;
             }
+
             // Check Fifo0 full
-            if(registers.CAN_IER.FF0InterruptEnabled == true &&
+            if (registers.CAN_IER.FF0InterruptEnabled == true &&
                 registers.CAN_RFR[RxFifo0].FifoFull == true)
             {
                 return true;
             }
+
             // Check Fifo0 overrun
-            if(registers.CAN_IER.FOV0InterruptEnabled == true &&
+            if (registers.CAN_IER.FOV0InterruptEnabled == true &&
                 registers.CAN_RFR[RxFifo0].FifoOverrun == true)
             {
                 return true;
             }
+
             return false;
         }
 
         public bool EnableFifo1Interrupt()
         {
             // Check pending message
-            if(registers.CAN_IER.FMP1InterruptEnabled == true &&
+            if (registers.CAN_IER.FMP1InterruptEnabled == true &&
                 registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
             {
                 return true;
             }
+
             // Check Fifo1 full
-            if(registers.CAN_IER.FF1InterruptEnabled == true &&
+            if (registers.CAN_IER.FF1InterruptEnabled == true &&
                 registers.CAN_RFR[RxFifo1].FifoFull == true)
             {
                 return true;
             }
+
             // Check Fifo1 overrun
-            if(registers.CAN_IER.FOV1InterruptEnabled == true &&
+            if (registers.CAN_IER.FOV1InterruptEnabled == true &&
                 registers.CAN_RFR[RxFifo1].FifoOverrun == true)
             {
                 return true;
             }
+
             return false;
         }
 
         public bool EnableSCEInterrupt()
         {
             // An error condition is pending
-            if(registers.CAN_IER.ERRInterruptEnabled == true &&
+            if (registers.CAN_IER.ERRInterruptEnabled == true &&
                 registers.CAN_MSR.ErrorInterrupt == true)
             {
                 return true;
             }
+
             // Error warning interrupt
-            if(registers.CAN_IER.EWGInterruptEnabled == true &&
+            if (registers.CAN_IER.EWGInterruptEnabled == true &&
                 registers.CAN_ESR.ErrorWarningFlag == true)
             {
                 return true;
             }
+
             // Error passive interrupt
-            if(registers.CAN_IER.EPVInterruptEnabled == true &&
+            if (registers.CAN_IER.EPVInterruptEnabled == true &&
                 registers.CAN_ESR.ErrorPassiveFlag == true)
             {
                 return true;
             }
+
             // Error passive interrupt
-            if(registers.CAN_IER.BOFInterruptEnabled == true &&
+            if (registers.CAN_IER.BOFInterruptEnabled == true &&
                 registers.CAN_ESR.BusOffFlag == true)
             {
                 return true;
             }
+
             // LEC Error pending
-            if(registers.CAN_IER.LECInterruptEnabled == true &&
+            if (registers.CAN_IER.LECInterruptEnabled == true &&
                 registers.CAN_ESR.LECErrorPending() == true)
             {
                 return true;
             }
+
             //  Sleep interrupt
-            if(registers.CAN_IER.SLKInterruptEnabled == true &&
+            if (registers.CAN_IER.SLKInterruptEnabled == true &&
                 registers.CAN_MSR.SleepAckInterrupt == true)
             {
                 return true;
             }
+
             //  Wakup interrupt
-            if(registers.CAN_IER.WKUInterruptEnabled == true &&
+            if (registers.CAN_IER.WKUInterruptEnabled == true &&
                 registers.CAN_MSR.WakeupInterrupt == true)
             {
                 return true;
             }
+
             return false;
         }
 
@@ -613,13 +646,14 @@ namespace Antmicro.Renode.Peripherals.CAN
         {
             uint Retval = 0;
 
-            if(IsSlave && AddressIsWithinFilterRegistersArea(offset))
+            if (IsSlave && AddressIsWithinFilterRegistersArea(offset))
             {
-                this.Log(LogLevel.Warning, "Trying to read slave's filter registers, but the slave uses master's filter registers - reading from master instead.");
+                this.Log(LogLevel.Warning,
+                    "Trying to read slave's filter registers, but the slave uses master's filter registers - reading from master instead.");
             }
 
             // Filter bank registers
-            if((registerOffset)offset >= registerOffset.CAN_F0R1 && (registerOffset)offset <= registerOffset.CAN_F27R2)
+            if ((registerOffset)offset >= registerOffset.CAN_F0R1 && (registerOffset)offset <= registerOffset.CAN_F27R2)
             {
                 int bankIdx = AddressToFilterBankIdx(offset);
                 int regIdx = AddressToRegIdx(offset);
@@ -628,7 +662,7 @@ namespace Antmicro.Renode.Peripherals.CAN
             }
             else
             {
-                switch((registerOffset)offset)
+                switch ((registerOffset)offset)
                 {
                     case registerOffset.CAN_MCR:
                         Retval = registers.CAN_MCR.GetValue();
@@ -652,10 +686,11 @@ namespace Antmicro.Renode.Peripherals.CAN
                         Retval = registers.CAN_ESR.GetValue();
                         break;
                     case registerOffset.CAN_BTR:
-                        if(registers.CAN_MSR.InitAck == true)
+                        if (registers.CAN_MSR.InitAck == true)
                         {
                             Retval = registers.CAN_BTR.GetValue();
                         }
+
                         break;
 
                     // Filter registers
@@ -719,54 +754,62 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                     // RX mailbox 0
                     case registerOffset.CAN_RI0R:
-                        if(registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
+                        if (registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
                         {
                             Retval = RxFifo[RxFifo0].Peek().CAN_RIR;
                         }
+
                         break;
                     case registerOffset.CAN_RDT0R:
-                        if(registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
+                        if (registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
                         {
                             Retval = RxFifo[RxFifo0].Peek().CAN_RDTR;
                         }
+
                         break;
                     case registerOffset.CAN_RL0R:
-                        if(registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
+                        if (registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
                         {
                             Retval = RxFifo[RxFifo0].Peek().CAN_RLR;
                         }
+
                         break;
                     case registerOffset.CAN_RH0R:
-                        if(registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
+                        if (registers.CAN_RFR[RxFifo0].HasMessagesPending() == true)
                         {
                             Retval = RxFifo[RxFifo0].Peek().CAN_RHR;
                         }
+
                         break;
 
                     // RX mailboxes 1
                     case registerOffset.CAN_RI1R:
-                        if(registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
+                        if (registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
                         {
                             Retval = RxFifo[RxFifo1].Peek().CAN_RIR;
                         }
+
                         break;
                     case registerOffset.CAN_RDT1R:
-                        if(registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
+                        if (registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
                         {
                             Retval = RxFifo[RxFifo1].Peek().CAN_RDTR;
                         }
+
                         break;
                     case registerOffset.CAN_RL1R:
-                        if(registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
+                        if (registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
                         {
                             Retval = RxFifo[RxFifo1].Peek().CAN_RLR;
                         }
+
                         break;
                     case registerOffset.CAN_RH1R:
-                        if(registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
+                        if (registers.CAN_RFR[RxFifo1].HasMessagesPending() == true)
                         {
                             Retval = RxFifo[RxFifo1].Peek().CAN_RHR;
                         }
+
                         break;
 
                     default:
@@ -782,15 +825,16 @@ namespace Antmicro.Renode.Peripherals.CAN
         {
             registers.Reset(!IsSlave);
 
-            if(!IsSlave)
+            if (!IsSlave)
             {
-                for(int i = 0; i < NumberOfFilterBanks; i++)
+                for (int i = 0; i < NumberOfFilterBanks; i++)
                 {
                     FilterBanks[i].Active = false;
                     FilterBanks[i].Mode = FilterBankMode.FilterModeIdMask;
                     FilterBanks[i].FifoAssignment = 0;
                     FilterBanks[i].Scale = FilterBankScale.FilterScale16Bit;
                 }
+
                 UpdateFilterCANAssignment();
             }
         }
@@ -800,7 +844,7 @@ namespace Antmicro.Renode.Peripherals.CAN
         private bool AddressIsWithinFilterRegistersArea(long address)
         {
             return (registerOffset)address >= registerOffset.CAN_FMR
-                && (registerOffset)address <= registerOffset.CAN_F27R2;
+                   && (registerOffset)address <= registerOffset.CAN_F27R2;
         }
 
         private enum registerOffset : uint
@@ -910,7 +954,7 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public DeviceRegisters()
             {
-                for(int i = 0; i < NumberOfRxFifos; i++)
+                for (int i = 0; i < NumberOfRxFifos; i++)
                 {
                     CAN_RFR[i] = new ReceiveFifoRegister();
                 }
@@ -927,7 +971,7 @@ namespace Antmicro.Renode.Peripherals.CAN
                 CAN_ESR.SetResetValue(0x0);
                 CAN_BTR.SetValue(0x01230000);
 
-                if(resetFilters)
+                if (resetFilters)
                 {
                     // Filter Registers
                     CAN_FMR.SetValue(0x2A1C0E01);
@@ -940,16 +984,16 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public class MasterControlRegister
             {
-                public const uint DBF   = (1u << 16);
+                public const uint DBF = (1u << 16);
                 public const uint RESET = (1u << 15);
-                public const uint TTCM  = (1u << 7);
-                public const uint ABOM  = (1u << 6);
-                public const uint AWUM  = (1u << 5);
-                public const uint NART  = (1u << 4);
-                public const uint RFLM  = (1u << 3);
-                public const uint TXFP  = (1u << 2);
+                public const uint TTCM = (1u << 7);
+                public const uint ABOM = (1u << 6);
+                public const uint AWUM = (1u << 5);
+                public const uint NART = (1u << 4);
+                public const uint RFLM = (1u << 3);
+                public const uint TXFP = (1u << 2);
                 public const uint SLEEP = (1u << 1);
-                public const uint INRQ  = (1u << 0);
+                public const uint INRQ = (1u << 0);
 
                 public bool DebugFreeze;
                 public bool Reset;
@@ -964,29 +1008,29 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 public void SetValue(uint value)
                 {
-                    DebugFreeze          = (value & DBF)   != 0;
-                    Reset                = (value & RESET) != 0;
-                    TimeTriggeredComMode = (value & TTCM)  != 0;
-                    AutoBusOffManagement = (value & ABOM)  != 0;
-                    AutoWakeUpMode       = (value & AWUM)  != 0;
-                    NoAutoRetransmission = (value & NART)  != 0;
-                    RxFifoLockedMode     = (value & RFLM)  != 0;
-                    TxFifoPriority       = (value & TXFP)  != 0;
-                    SleepRequest         = (value & SLEEP) != 0;
-                    InitRequest          = (value & INRQ)  != 0;
+                    DebugFreeze = (value & DBF) != 0;
+                    Reset = (value & RESET) != 0;
+                    TimeTriggeredComMode = (value & TTCM) != 0;
+                    AutoBusOffManagement = (value & ABOM) != 0;
+                    AutoWakeUpMode = (value & AWUM) != 0;
+                    NoAutoRetransmission = (value & NART) != 0;
+                    RxFifoLockedMode = (value & RFLM) != 0;
+                    TxFifoPriority = (value & TXFP) != 0;
+                    SleepRequest = (value & SLEEP) != 0;
+                    InitRequest = (value & INRQ) != 0;
                 }
 
                 public uint GetValue()
                 {
                     var retVal =
-                        (DebugFreeze           ? DBF   : 0) |
-                        (TimeTriggeredComMode  ? TTCM  : 0) |
-                        (AutoBusOffManagement  ? ABOM  : 0) |
-                        (AutoWakeUpMode        ? AWUM  : 0) |
-                        (NoAutoRetransmission  ? NART  : 0) |
-                        (RxFifoLockedMode      ? RFLM  : 0) |
-                        (TxFifoPriority        ? TXFP  : 0) |
-                        (SleepRequest          ? SLEEP : 0) |
+                        (DebugFreeze ? DBF : 0) |
+                        (TimeTriggeredComMode ? TTCM : 0) |
+                        (AutoBusOffManagement ? ABOM : 0) |
+                        (AutoWakeUpMode ? AWUM : 0) |
+                        (NoAutoRetransmission ? NART : 0) |
+                        (RxFifoLockedMode ? RFLM : 0) |
+                        (TxFifoPriority ? TXFP : 0) |
+                        (SleepRequest ? SLEEP : 0) |
                         (InitRequest ? INRQ : 0);
                     return retVal;
                 }
@@ -994,15 +1038,15 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public class MasterStatusRegister
             {
-                public const uint RX    = (1u << 11);
-                public const uint SAMP  = (1u << 10);
-                public const uint RXM   = (1u << 9);
-                public const uint TXM   = (1u << 8);
+                public const uint RX = (1u << 11);
+                public const uint SAMP = (1u << 10);
+                public const uint RXM = (1u << 9);
+                public const uint TXM = (1u << 8);
                 public const uint SLAKI = (1u << 4);
-                public const uint WKUI  = (1u << 3);
-                public const uint ERRI  = (1u << 2);
-                public const uint SLAK  = (1u << 1);
-                public const uint INAK  = (1u << 0);
+                public const uint WKUI = (1u << 3);
+                public const uint ERRI = (1u << 2);
+                public const uint SLAK = (1u << 1);
+                public const uint INAK = (1u << 0);
 
                 public bool RxSignal;
                 public bool LastSamplePoint;
@@ -1016,28 +1060,30 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 public void SetResetValue(uint value)
                 {
-                    RxSignal          = (value & RX)    != 0;
-                    LastSamplePoint   = (value & SAMP)  != 0;
-                    RxMode            = (value & RXM)   != 0;
-                    TxMode            = (value & TXM)   != 0;
+                    RxSignal = (value & RX) != 0;
+                    LastSamplePoint = (value & SAMP) != 0;
+                    RxMode = (value & RXM) != 0;
+                    TxMode = (value & TXM) != 0;
                     SleepAckInterrupt = (value & SLAKI) != 0;
-                    WakeupInterrupt   = (value & WKUI)  != 0;
-                    ErrorInterrupt    = (value & ERRI)  != 0;
-                    SleepAck          = (value & SLAK)  != 0;
-                    InitAck           = (value & INAK)  != 0;
+                    WakeupInterrupt = (value & WKUI) != 0;
+                    ErrorInterrupt = (value & ERRI) != 0;
+                    SleepAck = (value & SLAK) != 0;
+                    InitAck = (value & INAK) != 0;
                 }
 
                 public void SetValue(uint value)
                 {
-                    if((value & SLAKI) != 0)
+                    if ((value & SLAKI) != 0)
                     {
                         SleepAckInterrupt = false;
                     }
-                    if((value & WKUI) != 0)
+
+                    if ((value & WKUI) != 0)
                     {
                         WakeupInterrupt = false;
                     }
-                    if((value & ERRI) != 0)
+
+                    if ((value & ERRI) != 0)
                     {
                         ErrorInterrupt = false;
                     }
@@ -1046,15 +1092,15 @@ namespace Antmicro.Renode.Peripherals.CAN
                 public uint GetValue()
                 {
                     var retVal =
-                        (RxSignal          ? RX    : 0) |
-                        (LastSamplePoint   ? SAMP  : 0) |
-                        (RxMode            ? RXM   : 0) |
-                        (TxMode            ? TXM   : 0) |
+                        (RxSignal ? RX : 0) |
+                        (LastSamplePoint ? SAMP : 0) |
+                        (RxMode ? RXM : 0) |
+                        (TxMode ? TXM : 0) |
                         (SleepAckInterrupt ? SLAKI : 0) |
-                        (WakeupInterrupt   ? WKUI  : 0) |
-                        (ErrorInterrupt    ? ERRI  : 0) |
-                        (SleepAck          ? SLAK  : 0) |
-                        (InitAck           ? INAK  : 0);
+                        (WakeupInterrupt ? WKUI : 0) |
+                        (ErrorInterrupt ? ERRI : 0) |
+                        (SleepAck ? SLAK : 0) |
+                        (InitAck ? INAK : 0);
                     return retVal;
                 }
             }
@@ -1081,29 +1127,32 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 public void SetValue(uint value)
                 {
-                    if((value & FULL) != 0)
+                    if ((value & FULL) != 0)
                     {
                         FifoFull = false;
                     }
-                    if((value & FOVR) != 0)
+
+                    if ((value & FOVR) != 0)
                     {
                         FifoOverrun = false;
                     }
-                    if((value & RFOM) != 0)
+
+                    if ((value & RFOM) != 0)
                     {
-                        if(RxFifo.Count > 0)
+                        if (RxFifo.Count > 0)
                         {
                             RxFifo.Dequeue();
                         }
                     }
-                    if(UpdateInterruptLine != null)
+
+                    if (UpdateInterruptLine != null)
                         UpdateInterruptLine();
                 }
 
                 public uint GetValue()
                 {
                     var retVal =
-                        (FifoFull    ? FULL : 0) |
+                        (FifoFull ? FULL : 0) |
                         (FifoOverrun ? FOVR : 0) |
                         ((uint)RxFifo.Count & FMPMASK);
                     return retVal;
@@ -1121,15 +1170,15 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 public void ReceiveMessage(CANMessage msg, bool RxFifoLockedMode)
                 {
-                    if(RxFifo.Count < 3)
+                    if (RxFifo.Count < 3)
                     {
                         RxFifo.Enqueue(msg);
-                        if(RxFifo.Count == MaxMessagesInFifo)
+                        if (RxFifo.Count == MaxMessagesInFifo)
                         {
                             FifoFull = true;
                         }
                     }
-                    else if(RxFifoLockedMode == false)
+                    else if (RxFifoLockedMode == false)
                     {
                         // Keep 3 newest messages in queue and signal overrun
                         RxFifo.Dequeue();
@@ -1146,20 +1195,20 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public class InterruptEnableRegister
             {
-                public const uint TMEIE  = (1u << 0);
+                public const uint TMEIE = (1u << 0);
                 public const uint FMPIE0 = (1u << 1);
-                public const uint FFIE0  = (1u << 2);
+                public const uint FFIE0 = (1u << 2);
                 public const uint FOVIE0 = (1u << 3);
                 public const uint FMPIE1 = (1u << 4);
-                public const uint FFIE1  = (1u << 5);
+                public const uint FFIE1 = (1u << 5);
                 public const uint FOVIE1 = (1u << 6);
-                public const uint EWGIE  = (1u << 8);
-                public const uint EPVIE  = (1u << 9);
-                public const uint BOFIE  = (1u << 10);
-                public const uint LECIE  = (1u << 11);
-                public const uint ERRIE  = (1u << 15);
-                public const uint WKUIE  = (1u << 16);
-                public const uint SLKIE  = (1u << 17);
+                public const uint EWGIE = (1u << 8);
+                public const uint EPVIE = (1u << 9);
+                public const uint BOFIE = (1u << 10);
+                public const uint LECIE = (1u << 11);
+                public const uint ERRIE = (1u << 15);
+                public const uint WKUIE = (1u << 16);
+                public const uint SLKIE = (1u << 17);
 
                 public bool TMEInterruptEnabled;
                 public bool FMP0InterruptEnabled;
@@ -1178,39 +1227,39 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 public void SetValue(uint value)
                 {
-                    TMEInterruptEnabled  = (value & TMEIE)  != 0;
+                    TMEInterruptEnabled = (value & TMEIE) != 0;
                     FMP0InterruptEnabled = (value & FMPIE0) != 0;
-                    FF0InterruptEnabled  = (value & FFIE0)  != 0;
+                    FF0InterruptEnabled = (value & FFIE0) != 0;
                     FOV0InterruptEnabled = (value & FOVIE0) != 0;
                     FMP1InterruptEnabled = (value & FMPIE1) != 0;
-                    FF1InterruptEnabled  = (value & FFIE1)  != 0;
+                    FF1InterruptEnabled = (value & FFIE1) != 0;
                     FOV1InterruptEnabled = (value & FOVIE1) != 0;
-                    EWGInterruptEnabled  = (value & EWGIE)  != 0;
-                    EPVInterruptEnabled  = (value & EPVIE)  != 0;
-                    BOFInterruptEnabled  = (value & BOFIE)  != 0;
-                    LECInterruptEnabled  = (value & LECIE)  != 0;
-                    ERRInterruptEnabled  = (value & ERRIE)  != 0;
-                    WKUInterruptEnabled  = (value & WKUIE)  != 0;
-                    SLKInterruptEnabled  = (value & SLKIE)  != 0;
+                    EWGInterruptEnabled = (value & EWGIE) != 0;
+                    EPVInterruptEnabled = (value & EPVIE) != 0;
+                    BOFInterruptEnabled = (value & BOFIE) != 0;
+                    LECInterruptEnabled = (value & LECIE) != 0;
+                    ERRInterruptEnabled = (value & ERRIE) != 0;
+                    WKUInterruptEnabled = (value & WKUIE) != 0;
+                    SLKInterruptEnabled = (value & SLKIE) != 0;
                 }
 
                 public uint GetValue()
                 {
                     var retVal =
-                        (TMEInterruptEnabled  ? TMEIE  : 0) |
+                        (TMEInterruptEnabled ? TMEIE : 0) |
                         (FMP0InterruptEnabled ? FMPIE0 : 0) |
-                        (FF0InterruptEnabled  ? FFIE0  : 0) |
+                        (FF0InterruptEnabled ? FFIE0 : 0) |
                         (FOV0InterruptEnabled ? FOVIE0 : 0) |
                         (FMP1InterruptEnabled ? FMPIE1 : 0) |
-                        (FF1InterruptEnabled  ? FFIE1  : 0) |
+                        (FF1InterruptEnabled ? FFIE1 : 0) |
                         (FOV1InterruptEnabled ? FOVIE1 : 0) |
-                        (EWGInterruptEnabled  ? EWGIE  : 0) |
-                        (EPVInterruptEnabled  ? EPVIE  : 0) |
-                        (BOFInterruptEnabled  ? BOFIE  : 0) |
-                        (LECInterruptEnabled  ? LECIE  : 0) |
-                        (ERRInterruptEnabled  ? ERRIE  : 0) |
-                        (WKUInterruptEnabled  ? WKUIE  : 0) |
-                        (SLKInterruptEnabled  ? SLKIE  : 0);
+                        (EWGInterruptEnabled ? EWGIE : 0) |
+                        (EPVInterruptEnabled ? EPVIE : 0) |
+                        (BOFInterruptEnabled ? BOFIE : 0) |
+                        (LECInterruptEnabled ? LECIE : 0) |
+                        (ERRInterruptEnabled ? ERRIE : 0) |
+                        (WKUInterruptEnabled ? WKUIE : 0) |
+                        (SLKInterruptEnabled ? SLKIE : 0);
                     return retVal;
                 }
             }
@@ -1262,7 +1311,7 @@ namespace Antmicro.Renode.Peripherals.CAN
                     var retVal =
                         (ErrorWarningFlag ? EWGF : 0) |
                         (ErrorPassiveFlag ? EPVF : 0) |
-                        (BusOffFlag      ? BOFF : 0) |
+                        (BusOffFlag ? BOFF : 0) |
                         ((LastErrorCode & LECMASK) << LECSHIFT) |
                         ((TransmitErrorCounter & TECMASK) << TECSHIFT) |
                         ((ReceiveErrorCounter & RECMASK) << RECSHIFT);
@@ -1282,8 +1331,8 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public class BitTimingRegister
             {
-                public const uint SILM  = (1u << 31);
-                public const uint LBKM  = (1u << 30);
+                public const uint SILM = (1u << 31);
+                public const uint LBKM = (1u << 30);
 
                 public bool SilentMode;
                 public bool LoopbackMode;
@@ -1324,59 +1373,70 @@ namespace Antmicro.Renode.Peripherals.CAN
                 public const uint TERR2 = (1u << 19);
                 public const uint ABRQ2 = (1u << 23);
 
-                public const uint TME0  = (1u << 26);
-                public const uint TME1  = (1u << 27);
-                public const uint TME2  = (1u << 28);
+                public const uint TME0 = (1u << 26);
+                public const uint TME1 = (1u << 27);
+                public const uint TME2 = (1u << 28);
 
                 private uint RegValue;
 
                 public void SetValue(uint value)
                 {
-                    if((value & TERR2) != 0)
+                    if ((value & TERR2) != 0)
                     {
                         RegValue &= ~(TERR2);
                     }
-                    if((value & ALST2) != 0)
+
+                    if ((value & ALST2) != 0)
                     {
                         RegValue &= ~(ALST2);
                     }
-                    if((value & TXOK2) != 0)
+
+                    if ((value & TXOK2) != 0)
                     {
                         RegValue &= ~(TXOK2);
                     }
-                    if((value & TERR1) != 0)
+
+                    if ((value & TERR1) != 0)
                     {
                         RegValue &= ~(TERR1);
                     }
-                    if((value & ALST1) != 0)
+
+                    if ((value & ALST1) != 0)
                     {
                         RegValue &= ~(ALST1);
                     }
-                    if((value & TXOK1) != 0)
+
+                    if ((value & TXOK1) != 0)
                     {
                         RegValue &= ~(TXOK1);
                     }
-                    if((value & TERR0) != 0)
+
+                    if ((value & TERR0) != 0)
                     {
                         RegValue &= ~(TERR1);
                     }
-                    if((value & ALST0) != 0)
+
+                    if ((value & ALST0) != 0)
                     {
                         RegValue &= ~(ALST0);
                     }
-                    if((value & TXOK0) != 0)
+
+                    if ((value & TXOK0) != 0)
                     {
                         RegValue &= ~(TXOK0);
                     }
-                    if((value & RQCP0) != 0)
+
+                    if ((value & RQCP0) != 0)
                     {
                         RegValue &= ~(TXOK0 | ALST0 | TERR0 | RQCP0);
                     }
-                    if((value & RQCP1) != 0)
+
+                    if ((value & RQCP1) != 0)
                     {
                         RegValue &= ~(TXOK1 | ALST1 | TERR1 | RQCP1);
                     }
-                    if((value & RQCP2) != 0)
+
+                    if ((value & RQCP2) != 0)
                     {
                         RegValue &= ~(TXOK2 | ALST2 | TERR2 | RQCP2);
                     }
@@ -1415,9 +1475,9 @@ namespace Antmicro.Renode.Peripherals.CAN
                 public bool MailboxRequestCompleted()
                 {
                     var retVal =
-                             ((RegValue & RQCP0) != 0) ||
-                             ((RegValue & RQCP1) != 0) ||
-                             ((RegValue & RQCP2) != 0);
+                        ((RegValue & RQCP0) != 0) ||
+                        ((RegValue & RQCP1) != 0) ||
+                        ((RegValue & RQCP2) != 0);
                     return retVal;
                 }
             }
@@ -1446,12 +1506,13 @@ namespace Antmicro.Renode.Peripherals.CAN
                     Reserved1 = (value >> RESERVED1SHIFT) & RESERVED1MASK;
                     Reserved2 = (value >> RESERVED2SHIFT) & RESERVED2MASK;
                 }
+
                 public uint GetValue()
                 {
                     var retVal = (FilterInitMode ? FINIT : 0) |
-                        ((CAN2StartBank & CAN2SBMASK) << CAN2SBSHIFT) |
-                        ((Reserved1 & RESERVED1MASK) << RESERVED1SHIFT) |
-                        ((Reserved2 & RESERVED2MASK) << RESERVED2SHIFT);
+                                 ((CAN2StartBank & CAN2SBMASK) << CAN2SBSHIFT) |
+                                 ((Reserved1 & RESERVED1MASK) << RESERVED1SHIFT) |
+                                 ((Reserved2 & RESERVED2MASK) << RESERVED2SHIFT);
                     return retVal;
                 }
             }
@@ -1494,7 +1555,7 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 public FilterBankMode FilterMode(int filterIdx)
                 {
-                    if((RegValue & (1u << filterIdx)) != 0)
+                    if ((RegValue & (1u << filterIdx)) != 0)
                     {
                         return FilterBankMode.FilterIdentifierList;
                     }
@@ -1521,7 +1582,7 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 public FilterBankScale FilterScale(int filterIdx)
                 {
-                    if((RegValue & (1u << filterIdx)) != 0)
+                    if ((RegValue & (1u << filterIdx)) != 0)
                     {
                         return FilterBankScale.FilterScale32Bit;
                     }
@@ -1548,7 +1609,7 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 public uint FifoAssignment(int filterIdx)
                 {
-                    if((RegValue & (1u << filterIdx)) != 0)
+                    if ((RegValue & (1u << filterIdx)) != 0)
                     {
                         return 1;
                     }
@@ -1561,7 +1622,6 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public class MailboxIdentifierRegister
             {
-
                 public const uint TXRQ = (1u << 0);
                 private uint RegValue;
 
@@ -1603,8 +1663,9 @@ namespace Antmicro.Renode.Peripherals.CAN
             public const uint RIRMASK =
                 (STIDMASK << STIDSHIFT) |
                 (EXIDMASK << EXIDSHIFT) |
-                (IDEMASK  << IDESHIFT)  |
-                (RTRMASK  << RTRSHIFT);
+                (IDEMASK << IDESHIFT) |
+                (RTRMASK << RTRSHIFT);
+
             public const uint RDTRMASK = (DLCMASK << DLCSHIFT);
 
             public uint CAN_RIR;
@@ -1637,7 +1698,7 @@ namespace Antmicro.Renode.Peripherals.CAN
             }
 
             public CANMessage(uint STID, uint EXID, uint RTR,
-                    uint IDE, uint DLC, byte[] Data, uint TimeStamp)
+                uint IDE, uint DLC, byte[] Data, uint TimeStamp)
             {
                 this.STID = STID;
                 this.EXID = EXID;
@@ -1668,8 +1729,8 @@ namespace Antmicro.Renode.Peripherals.CAN
                 CAN_RIR =
                     ((STID & STIDMASK) << STIDSHIFT) |
                     ((EXID & EXIDMASK) << EXIDSHIFT) |
-                    ((IDE  & IDEMASK)  << IDESHIFT)  |
-                    ((RTR  & RTRMASK)  << RTRSHIFT);
+                    ((IDE & IDEMASK) << IDESHIFT) |
+                    ((RTR & RTRMASK) << RTRSHIFT);
 
                 GenerateRDTRRegister();
                 GenerateDataRegisters();
@@ -1687,13 +1748,13 @@ namespace Antmicro.Renode.Peripherals.CAN
             {
                 var l = Data.Length;
                 CAN_RLR = 0U;
-                CAN_RLR |= (uint)((l > 0) ? Data[0] << 0  : 0);
-                CAN_RLR |= (uint)((l > 1) ? Data[1] << 8  : 0);
+                CAN_RLR |= (uint)((l > 0) ? Data[0] << 0 : 0);
+                CAN_RLR |= (uint)((l > 1) ? Data[1] << 8 : 0);
                 CAN_RLR |= (uint)((l > 2) ? Data[2] << 16 : 0);
                 CAN_RLR |= (uint)((l > 3) ? Data[3] << 24 : 0);
                 CAN_RHR = 0U;
-                CAN_RHR |= (uint)((l > 4) ? Data[4] << 0  : 0);
-                CAN_RHR |= (uint)((l > 5) ? Data[5] << 8  : 0);
+                CAN_RHR |= (uint)((l > 4) ? Data[4] << 0 : 0);
+                CAN_RHR |= (uint)((l > 5) ? Data[5] << 8 : 0);
                 CAN_RHR |= (uint)((l > 6) ? Data[6] << 16 : 0);
                 CAN_RHR |= (uint)((l > 7) ? Data[7] << 24 : 0);
             }
@@ -1709,8 +1770,8 @@ namespace Antmicro.Renode.Peripherals.CAN
             {
                 STID = (CAN_RIR >> STIDSHIFT) & STIDMASK;
                 EXID = (CAN_RIR >> EXIDSHIFT) & EXIDMASK;
-                IDE  = (CAN_RIR >> IDESHIFT) & IDEMASK;
-                RTR  = (CAN_RIR >> RTRSHIFT) & RTRMASK;
+                IDE = (CAN_RIR >> IDESHIFT) & IDEMASK;
+                RTR = (CAN_RIR >> RTRSHIFT) & RTRMASK;
             }
 
             public void ExtractRDTRRegister()
@@ -1721,18 +1782,18 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public void ExtractDataRegisters()
             {
-                if(DLC > 0)
+                if (DLC > 0)
                 {
                     Data = new byte[DLC];
 
                     // Extract CAN_RLR
-                    for(int i = 0; i < DLC && i < 4; i++)
+                    for (int i = 0; i < DLC && i < 4; i++)
                     {
                         Data[i] = (byte)((CAN_RLR >> (i * 8)) & 0xFF);
                     }
 
                     // Extract CAN_RHR
-                    for(int i = 0; (i + 4) < DLC && i < 4; i++)
+                    for (int i = 0; (i + 4) < DLC && i < 4; i++)
                     {
                         Data[i + 4] = (byte)((CAN_RHR >> (i * 8)) & 0xFF);
                     }
@@ -1793,19 +1854,19 @@ namespace Antmicro.Renode.Peripherals.CAN
                 int NumOfFilters = (Scale == FilterBankScale.FilterScale32Bit) ? 2 : 4;
                 uint FilterNumber = FirstFilterNumber;
 
-                if(Mode == FilterBankMode.FilterModeIdMask)
+                if (Mode == FilterBankMode.FilterModeIdMask)
                 {
-                    for(int i = 0; i < NumOfFilters / 2; i += 2, FilterNumber++)
+                    for (int i = 0; i < NumOfFilters / 2; i += 2, FilterNumber++)
                     {
                         int mask = i + 1;
-                        if(
-                                ((filters[i].STID & filters[mask].STID) == (msg.STID & filters[mask].STID)) &&
-                                ((filters[i].EXID & filters[mask].EXID & filters[mask].EXIDMask) ==
-                                 (msg.EXID & filters[mask].EXID & filters[mask].EXIDMask)) &&
-                                ((filters[i].IDE & filters[mask].IDE) == (msg.IDE & filters[mask].IDE)) &&
-                                ((filters[i].RTR & filters[mask].RTR) == (msg.RTR & filters[mask].RTR)) &&
-                                ((filters[i].STID & filters[mask].STID) == (msg.STID & filters[mask].STID))
-                            )
+                        if (
+                            ((filters[i].STID & filters[mask].STID) == (msg.STID & filters[mask].STID)) &&
+                            ((filters[i].EXID & filters[mask].EXID & filters[mask].EXIDMask) ==
+                             (msg.EXID & filters[mask].EXID & filters[mask].EXIDMask)) &&
+                            ((filters[i].IDE & filters[mask].IDE) == (msg.IDE & filters[mask].IDE)) &&
+                            ((filters[i].RTR & filters[mask].RTR) == (msg.RTR & filters[mask].RTR)) &&
+                            ((filters[i].STID & filters[mask].STID) == (msg.STID & filters[mask].STID))
+                        )
                         {
                             msg.FilterMatchIndex = FilterNumber;
                             msg.RxFifo = FifoAssignment;
@@ -1815,14 +1876,14 @@ namespace Antmicro.Renode.Peripherals.CAN
                 }
                 else
                 {
-                    for(int i = 0; i < NumOfFilters; i++, FilterNumber++)
+                    for (int i = 0; i < NumOfFilters; i++, FilterNumber++)
                     {
-                        if(
-                                (filters[i].STID == msg.STID) &&
-                                ((filters[i].EXID & filters[i].EXIDMask) == (msg.EXID & filters[i].EXIDMask)) &&
-                                (filters[i].IDE == msg.IDE) &&
-                                (filters[i].RTR == msg.RTR)
-                           )
+                        if (
+                            (filters[i].STID == msg.STID) &&
+                            ((filters[i].EXID & filters[i].EXIDMask) == (msg.EXID & filters[i].EXIDMask)) &&
+                            (filters[i].IDE == msg.IDE) &&
+                            (filters[i].RTR == msg.RTR)
+                        )
                         {
                             msg.FilterMatchIndex = FilterNumber;
                             msg.RxFifo = FifoAssignment;
@@ -1830,6 +1891,7 @@ namespace Antmicro.Renode.Peripherals.CAN
                         }
                     }
                 }
+
                 return false;
             }
 
@@ -1837,44 +1899,45 @@ namespace Antmicro.Renode.Peripherals.CAN
             {
                 Filter[] filters;
 
-                if(Scale == FilterBankScale.FilterScale32Bit)
+                if (Scale == FilterBankScale.FilterScale32Bit)
                 {
                     filters = new Filter[2];
-                    for(int i = 0; i < 2; i++)
+                    for (int i = 0; i < 2; i++)
                     {
                         filters[i] = new Filter();
                         filters[i].STID = (FR[i] >> STIDSHIFT) & STIDMASK;
                         filters[i].EXID = (FR[i] >> EXIDSHIFT) & EXIDMASK;
-                        filters[i].IDE  = (FR[i] >> IDESHIFT)  & IDEMASK;
-                        filters[i].RTR  = (FR[i] >> RTRSHIFT)  & RTRMASK;
+                        filters[i].IDE = (FR[i] >> IDESHIFT) & IDEMASK;
+                        filters[i].RTR = (FR[i] >> RTRSHIFT) & RTRMASK;
                         filters[i].EXIDMask = 0x3FFF;
                     }
                 }
                 else
                 {
                     filters = new Filter[4];
-                    for(int i = 0; i < 4; i++)
+                    for (int i = 0; i < 4; i++)
                     {
                         filters[i] = new Filter();
                     }
+
                     filters[0].STID = (FR[0] >> STIDSHIFT) & STIDMASK;
-                    filters[0].IDE  = (FR[0] >> IDESHIFT2) & IDEMASK;
-                    filters[0].RTR  = (FR[0] >> RTRSHIFT2) & RTRMASK;
+                    filters[0].IDE = (FR[0] >> IDESHIFT2) & IDEMASK;
+                    filters[0].RTR = (FR[0] >> RTRSHIFT2) & RTRMASK;
                     filters[0].EXID = ((FR[0] >> EXIDSHIFT2) & EXIDMASK2) << EXIDSHIFT4;
                     filters[0].EXIDMask = EXIDMASK2 << EXIDSHIFT4;
                     filters[1].STID = (FR[0] >> STIDSHIFT2) & STIDMASK;
-                    filters[1].IDE  = (FR[0] >> IDESHIFT3) & IDEMASK;
-                    filters[1].RTR  = (FR[0] >> RTRSHIFT3) & RTRMASK;
+                    filters[1].IDE = (FR[0] >> IDESHIFT3) & IDEMASK;
+                    filters[1].RTR = (FR[0] >> RTRSHIFT3) & RTRMASK;
                     filters[1].EXID = ((FR[0] >> EXIDSHIFT3) & EXIDMASK2) << EXIDSHIFT4;
                     filters[1].EXIDMask = EXIDMASK2 << EXIDSHIFT4;
                     filters[2].STID = (FR[1] >> STIDSHIFT) & STIDMASK;
-                    filters[2].IDE  = (FR[1] >> IDESHIFT2) & 0x1;
-                    filters[2].RTR  = (FR[1] >> RTRSHIFT2) & 0x1;
+                    filters[2].IDE = (FR[1] >> IDESHIFT2) & 0x1;
+                    filters[2].RTR = (FR[1] >> RTRSHIFT2) & 0x1;
                     filters[2].EXID = ((FR[1] >> EXIDSHIFT2) & EXIDMASK2) << EXIDSHIFT4;
                     filters[2].EXIDMask = EXIDMASK2 << EXIDSHIFT4;
                     filters[3].STID = (FR[1] >> STIDSHIFT2) & STIDMASK;
-                    filters[3].IDE  = (FR[1] >> IDESHIFT3) & IDEMASK;
-                    filters[3].RTR  = (FR[1] >> RTRSHIFT3) & RTRMASK;
+                    filters[3].IDE = (FR[1] >> IDESHIFT3) & IDEMASK;
+                    filters[3].RTR = (FR[1] >> RTRSHIFT3) & RTRMASK;
                     filters[3].EXID = ((FR[1] >> EXIDSHIFT3) & EXIDMASK2) << EXIDSHIFT4;
                     filters[3].EXIDMask = EXIDMASK2 << EXIDSHIFT4;
                 }
@@ -1884,19 +1947,19 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public int CompareTo(FilterBank filterBank)
             {
-                if(filterBank == null)
+                if (filterBank == null)
                     return 1;
 
                 // 32BitScale higher priority than 16BitScale
-                if(Scale > filterBank.Scale)
+                if (Scale > filterBank.Scale)
                     return 1;
 
                 // IdentifierList higher priority than IdMask
-                if(Mode > filterBank.Mode)
+                if (Mode > filterBank.Mode)
                     return 1;
 
                 // Lower FilterNumber has higher priority
-                if(FirstFilterNumber < filterBank.FirstFilterNumber)
+                if (FirstFilterNumber < filterBank.FirstFilterNumber)
                     return 1;
 
                 // Lower priority on this than filterBank
@@ -1906,14 +1969,16 @@ namespace Antmicro.Renode.Peripherals.CAN
             public uint NumberOfFiltersInBank()
             {
                 uint NumFiltersInBank = 4;
-                if(Scale == FilterBankScale.FilterScale32Bit)
+                if (Scale == FilterBankScale.FilterScale32Bit)
                 {
                     NumFiltersInBank = 2;
                 }
-                if(Mode == FilterBankMode.FilterModeIdMask)
+
+                if (Mode == FilterBankMode.FilterModeIdMask)
                 {
                     NumFiltersInBank /= 2;
                 }
+
                 return NumFiltersInBank;
             }
         }
