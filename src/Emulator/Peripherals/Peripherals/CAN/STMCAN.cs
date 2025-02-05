@@ -382,7 +382,7 @@ namespace Antmicro.Renode.Peripherals.CAN
                     // value because filtering can be implemented on bits other
                     // than just standard/extended identifier value, e.g. IDE
                     // or RTR bit.
-                    FrameSent(new CANMessageFrame(msg.CAN_RIR, msg.Data));
+                    FrameSent(msg);
                 }
                 else
                 {
@@ -1722,6 +1722,14 @@ namespace Antmicro.Renode.Peripherals.CAN
 
                 this.Data = message.Data;
                 GenerateDataRegisters();
+            }
+            
+            public static implicit operator CANMessageFrame(CANMessage message)
+            {
+                var extended = message.IDE != 0;
+                var id = extended ? message.EXID : message.STID;
+                var remote = message.RTR != 0;
+                return new CANMessageFrame(id, message.Data, extended, remote);
             }
 
             public void GenerateRegisters()
