@@ -70,9 +70,10 @@ namespace Antmicro.Renode.Peripherals.I2C
             var start = port * 8;
             foreach (var i in Enumerable.Range(start, 8))
             {
-                // TODO: should the current output state be taken into account,
-                //       meaning when the corresponding output is 0 aka pulling to ground should the input read 0 regardless of the actual input state?
-                if (State[i]) value |= 1 << (i - start);
+                // when the pin is configured as an output aka. !Connection[i].IsSet it will always return false,
+                // only when the pin is configured as an input and the corresponding input is set it will return true
+                if (Connections[i].IsSet && State[i])
+                    value |= 1 << (i - start);
             }
 
             this.Log(LogLevel.Debug, "Reading port {0}: {1}", port, Convert.ToString(value, 2).PadLeft(8, '0'));
