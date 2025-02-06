@@ -105,18 +105,20 @@ namespace Antmicro.Renode.Peripherals.CAN
             else if (registers.CAN_BTR.LoopbackMode == false)
             {
                 CANMessage RxMsg = new CANMessage(message);
+                var received = false;
+                // TODO: why loop over fifos? RM0090-32.7 doesnt mention that a message can be received by multiple fifos!
                 for (int fifo = 0; fifo < NumberOfRxFifos; fifo++)
                 {
                     if (FilterCANMessage(fifo, RxMsg) == true)
                     {
-                        this.Log(LogLevel.Debug, "Message received RIR={0:X}", message.Id);
+                        this.Log(LogLevel.Debug, "Message (ID={0:X}) received by FIFO{1}", message.Id, fifo);
                         ReceiveCANMessage(RxMsg);
-                    }
-                    else
-                    {
-                        this.Log(LogLevel.Debug, "Message dropped by filter RIR={0:X}", message.Id);
+                        received = true;
                     }
                 }
+
+                if (!received)
+                    this.Log(LogLevel.Debug, "Message (ID={0:X}) not received by any FIFO", message.Id);
             }
 
             FrameReceived?.Invoke((int)message.Id, message.Data);
@@ -1652,6 +1654,7 @@ namespace Antmicro.Renode.Peripherals.CAN
             public const uint IDEMASK = 0x1;
             public const int RTRSHIFT = 1;
             public const uint RTRMASK = 0x1;
+            public const int STDEXTIOFFSET = 18;
 
             public const int TIMESHIFT = 16;
             public const uint TIMEMASK = 0xFFFF;
@@ -1713,21 +1716,29 @@ namespace Antmicro.Renode.Peripherals.CAN
 
             public CANMessage(CANMessageFrame message)
             {
-                CAN_RIR = (uint)message.Id & RIRMASK;
-                ExtractRIRRegister();
+                IDE = message.ExtendedFormat ? 1u : 0u;
+                RTR = message.RemoteFrame ? 1u : 0u;
+                if (IDE == 0)
+                {
+                    STID = message.Id & STIDMASK;
+                    EXID = (message.Id << STDEXTIOFFSET) & EXIDMASK;
+                }
+                else
+                {
+                    STID = (message.Id >> STDEXTIOFFSET) & STIDMASK;
+                    EXID = message.Id & EXIDMASK;
+                }
 
                 //this.TimeStamp = (Data[6] << 8) | Data[7];
-                this.DLC = (uint)message.Data.Length;
-                GenerateRDTRRegister();
-
-                this.Data = message.Data;
-                GenerateDataRegisters();
+                DLC = (uint)message.Data.Length;
+                Data = message.Data;
+                GenerateRegisters();
             }
-            
+
             public static implicit operator CANMessageFrame(CANMessage message)
             {
                 var extended = message.IDE != 0;
-                var id = extended ? message.EXID : message.STID;
+                var id = extended ? message.STID << STDEXTIOFFSET | message.EXID : message.STID;
                 var remote = message.RTR != 0;
                 return new CANMessageFrame(id, message.Data, extended, remote);
             }
