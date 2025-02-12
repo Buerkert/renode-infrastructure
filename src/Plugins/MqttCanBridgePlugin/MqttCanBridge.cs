@@ -7,6 +7,7 @@ using Antmicro.Renode.Core.Structure;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.CAN;
+using Antmicro.Renode.Utilities;
 using MQTTnet;
 using MQTTnet.Client;
 using MQTTnet.Formatter;
@@ -14,24 +15,53 @@ using MQTTnet.Protocol;
 
 namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
 {
+    public static class DateTimeOffsetExtensions
+    {
+        private static readonly DateTimeOffset UnixEpoch = new DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        private const long TicksPerMicrosecond = TimeSpan.TicksPerMillisecond / 1000;
+
+        public static long ToUnixTimeMicroseconds(this DateTimeOffset timestamp)
+        {
+            var duration = timestamp - UnixEpoch;
+            return duration.Ticks / TicksPerMicrosecond;
+        }
+    }
+
     public static class MqttCanBridgeExtensions
     {
         public static void CreateMqttCanBridge(this IMachine machine, string name, string brokerUri = "mqtt://localhost:1883", byte channel = 0,
-            string format = "json")
+            string format = "json", uint optionalFields = 0)
         {
-            ICanFrameCoder coder;
-            switch (format)
-            {
-                case "json":
-                    coder = new JsonCanFrameCoder(true, true, true);
-                    break;
-                default:
-                    throw new ConstructionException($"Unsupported format '{format}'");
-            }
-
+            var coder = CreateCoder(format, optionalFields);
             var bridge = new MqttCanBridge(brokerUri, channel, coder);
             machine.RegisterAsAChildOf(machine.SystemBus, bridge, NullRegistrationPoint.Instance);
             machine.SetLocalName(bridge, name);
+        }
+
+        private static ICanFrameCoder CreateCoder(string format, uint optionalFields)
+        {
+            var pubId = BitHelper.IsBitSet(optionalFields, (int)OptionalFieldPos.PubId);
+            var pubCnt = BitHelper.IsBitSet(optionalFields, (int)OptionalFieldPos.PubCnt);
+            var timeStamp = BitHelper.IsBitSet(optionalFields, (int)OptionalFieldPos.TimeStamp);
+            var invalidFields = (optionalFields & ~(uint)(OptionalFieldPos.PubId | OptionalFieldPos.PubCnt | OptionalFieldPos.TimeStamp)) != 0;
+            if (invalidFields)
+                throw new ConstructionException("Invalid optional fields");
+
+            switch (format)
+            {
+                case "json":
+                    return new JsonCanFrameCoder(pubId, pubCnt, timeStamp);
+                default:
+                    throw new ConstructionException($"Unsupported format '{format}'");
+            }
+        }
+
+        [Flags]
+        private enum OptionalFieldPos
+        {
+            PubId,
+            PubCnt,
+            TimeStamp
         }
     }
 
@@ -125,14 +155,21 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
                 try
                 {
                     var canFrame = new CanFrame(frame);
+                    if (coder.SupportsOptionalField(ICanFrameCoder.OptionalFields.PubId))
+                        canFrame.PubId = pubId;
+                    if (coder.SupportsOptionalField(ICanFrameCoder.OptionalFields.PubCnt))
+                        canFrame.PubCnt = pubCnt;
+                    if (coder.SupportsOptionalField(ICanFrameCoder.OptionalFields.TimeStamp))
+                        canFrame.TimeStamp = (ulong)DateTimeOffset.Now.ToUnixTimeMicroseconds();
+
                     var payload = coder.Encode(canFrame);
                     var message = new MqttApplicationMessageBuilder()
                         .WithTopic(Topic + canFrame.CobId)
                         .WithPayload(payload)
                         .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
                         .Build();
-
                     await mqttClient.PublishAsync(message);
+                    pubCnt++;
                 }
                 catch (Exception e)
                 {
@@ -149,10 +186,12 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
                 var msg = e.ApplicationMessage.PayloadSegment.ToArray();
                 var canFrame = coder.Decode(msg);
                 var expectedTopic = Topic + canFrame.CobId;
-                if (topic == expectedTopic)
-                    FrameSent?.Invoke(canFrame);
-                else
+                if (topic != expectedTopic)
                     this.Log(LogLevel.Warning, "Received from unexpected topic '{0}', expected '{1}'", topic, expectedTopic);
+                else if (canFrame.PubId == pubId)
+                    this.Log(LogLevel.Warning, "Received own message, ignoring");
+                else
+                    FrameSent?.Invoke(canFrame);
             }
             catch (Exception exception)
             {
@@ -167,6 +206,8 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
 
         private readonly Uri brokerUri;
         private readonly byte channel;
+        private readonly uint pubId = (uint)Random.Shared.Next();
+        private uint pubCnt;
         private readonly ICanFrameCoder coder;
         private readonly MqttFactory mqttFactory = new MqttFactory();
         private readonly IMqttClient mqttClient;
