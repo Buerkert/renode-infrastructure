@@ -7,6 +7,7 @@ using Antmicro.Renode.Core.Structure;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.CAN;
+using Antmicro.Renode.Plugins.MqttCanBridgePlugin.CanFrameCoders;
 using Antmicro.Renode.Utilities;
 using MQTTnet;
 using MQTTnet.Client;
