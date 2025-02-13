@@ -1,14 +1,10 @@
 ﻿using System;
 using System.Threading.Channels;
 using System.Threading.Tasks;
-using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.CAN;
-using Antmicro.Renode.Core.Structure;
-using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.CAN;
 using Antmicro.Renode.Plugins.MqttCanBridgePlugin.CanFrameCoders;
-using Antmicro.Renode.Utilities;
 using MQTTnet;
 using MQTTnet.Client;
 using MQTTnet.Formatter;
@@ -28,50 +24,20 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
         }
     }
 
-    public static class MqttCanBridgeExtensions
-    {
-        public static void CreateMqttCanBridge(this IMachine machine, string name, string format = "json", string brokerUri = "mqtt://localhost:1883",
-            byte channel = 0, uint optionalFields = 0)
-        {
-            var coder = CreateCoder(format, optionalFields);
-            var bridge = new MqttCanBridge(brokerUri, channel, coder);
-            machine.RegisterAsAChildOf(machine.SystemBus, bridge, NullRegistrationPoint.Instance);
-            machine.SetLocalName(bridge, name);
-        }
-
-        private static ICanFrameCoder CreateCoder(string format, uint optionalFields)
-        {
-            var pubId = BitHelper.IsBitSet(optionalFields, (int)OptionalFieldPos.PubId);
-            var pubCnt = BitHelper.IsBitSet(optionalFields, (int)OptionalFieldPos.PubCnt);
-            var timeStamp = BitHelper.IsBitSet(optionalFields, (int)OptionalFieldPos.TimeStamp);
-            var invalidFields = (optionalFields & ~(uint)(OptionalFieldPos.PubId | OptionalFieldPos.PubCnt | OptionalFieldPos.TimeStamp)) != 0;
-            if (invalidFields)
-                throw new ConstructionException("Invalid optional fields");
-
-            switch (format)
-            {
-                case "json":
-                    return new JsonCanFrameCoder(pubId, pubCnt, timeStamp);
-                case "binary":
-                    if (pubId || pubCnt || timeStamp)
-                        throw new ConstructionException("Optional fields are not supported in binary format");
-                    return new BinaryCanFrameCoder();
-                default:
-                    throw new ConstructionException($"Unsupported format '{format}'");
-            }
-        }
-
-        [Flags]
-        private enum OptionalFieldPos
-        {
-            PubId,
-            PubCnt,
-            TimeStamp
-        }
-    }
-
+    /// <summary>
+    /// Connects to a MQTT broker to send and receive CAN frames which are encoded and decoded using a specified coder.
+    /// The topic of the published can frame depends on the channel and the cobId of the frame: bus/can/{channel}/{cobId}.
+    /// To only receive the published frames of others and not one's own the non-local option of MQTTv5 is used.
+    /// Therefore, a broker that supports MQTTv5 is required.
+    /// </summary>
     public class MqttCanBridge : ICAN
     {
+        /// <summary>
+        /// Creates a new instance of the MQTT CAN bridge.
+        /// </summary>
+        /// <param name="brokerUri">The URI of the MQTT broker to connect to. E.g.: "mqtt://localhost:1883".</param>
+        /// <param name="channel">The channel of the CAN bus to use.</param>
+        /// <param name="coder">The coder to use for encoding and decoding CAN frames.</param>
         public MqttCanBridge(string brokerUri, byte channel, ICanFrameCoder coder)
         {
             this.brokerUri = new Uri(brokerUri);
@@ -116,7 +82,7 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
             this.Log(LogLevel.Debug, "Connecting to broker {0}", brokerUri);
             var connectOptions = mqttFactory.CreateClientOptionsBuilder()
                 .WithConnectionUri(brokerUri)
-                .WithProtocolVersion(MqttProtocolVersion.V500)
+                .WithProtocolVersion(MqttProtocolVersion.V500) // use MQTTv5 since we need the non-local option
                 .WithCleanSession()
                 .WithCleanStart()
                 .Build();
@@ -135,10 +101,10 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
         {
             this.Log(LogLevel.Debug, "Subscribing to channel {0}", channel);
             var topicFilter = mqttFactory.CreateTopicFilterBuilder()
-                .WithTopic(Topic + "#")
-                .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
-                .WithNoLocal()
-                .WithRetainHandling(MqttRetainHandling.DoNotSendOnSubscribe)
+                .WithTopic(Topic + "#") // subscribe to all messages on given channel since we want to bridge the whole network
+                .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce) // use QoS 0 to keep messages as fast as possible
+                .WithNoLocal() // do not receive own messages
+                .WithRetainHandling(MqttRetainHandling.DoNotSendOnSubscribe) // there shouldn't be any retained messages but just in case
                 .Build();
             var subOptions = mqttFactory.CreateSubscribeOptionsBuilder().WithTopicFilter(topicFilter).Build();
             try
@@ -169,9 +135,9 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
 
                     var payload = coder.Encode(canFrame);
                     var message = new MqttApplicationMessageBuilder()
-                        .WithTopic(Topic + canFrame.CobId)
+                        .WithTopic(Topic + canFrame.CobId) // publish frame to topic <channel-topic>/{cobId} so other consumers can filter by cobId
                         .WithPayload(payload)
-                        .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce)
+                        .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce) // use QoS 0 to keep messages as fast as possible
                         .Build();
                     await mqttClient.PublishAsync(message);
                     pubCnt++;
@@ -192,8 +158,10 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
                 var canFrame = coder.Decode(msg);
                 var expectedTopic = Topic + canFrame.CobId;
                 if (topic != expectedTopic)
+                    // this might happen if a member does not use the correct topic encoding
                     this.Log(LogLevel.Warning, "Received from unexpected topic '{0}', expected '{1}'", topic, expectedTopic);
                 else if (canFrame.PubId == pubId)
+                    // this should not happen since we use the non-local option, but just in case
                     this.Log(LogLevel.Warning, "Received own message, ignoring");
                 else
                     FrameSent?.Invoke(canFrame);

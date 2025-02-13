@@ -4,8 +4,18 @@ using Antmicro.Renode.Utilities;
 
 namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin.CanFrameCoders
 {
+    /// <summary>
+    /// A class representing a CAN frame that is compatible with the MQTT CAN bridge protocol.
+    /// </summary>
     public class CanFrame
     {
+        /// <summary>
+        /// Creates a new CAN frame with the specified type, cobId and data.
+        /// </summary>
+        /// <param name="type">The type of the frame.</param>
+        /// <param name="cobId">The 11-bit CAN ID of the frame.</param>
+        /// <param name="data">The data of the frame.</param>
+        /// <exception cref="ArgumentException">Thrown when the created frame is invalid. E.g. when cobId is not specified for non-error frames.</exception>
         public CanFrame(FrameType type, ushort? cobId = null, byte[] data = null)
         {
             if (type != FrameType.Error && cobId == null)
@@ -24,6 +34,11 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin.CanFrameCoders
                 Data = data;
         }
 
+        /// <summary>
+        /// Creates a new CAN frame from the specified CAN message frame.
+        /// </summary>
+        /// <param name="frame">The CAN message frame to create the CAN frame from.</param>
+        /// <exception cref="ArgumentException">Thrown when the created frame is invalid. Or the specified frame makes use of unsupported features.</exception>
         public CanFrame(CANMessageFrame frame) : this(frame.RemoteFrame ? FrameType.Remote : FrameType.Data, (ushort)frame.Id, frame.Data)
         {
             if (frame.ExtendedFormat)
@@ -34,6 +49,12 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin.CanFrameCoders
                 throw new ArgumentException("Bit rate switch is not supported");
         }
 
+        /// <summary>
+        /// Converts the specified CAN frame to a CAN message frame.
+        /// </summary>
+        /// <param name="frame">The CAN frame to convert.</param>
+        /// <returns>The converted CAN message frame.</returns>
+        /// <exception cref="ArgumentException">Thrown when the conversion is not possible. E.g. when the specified frame is an error frame.</exception>
         public static implicit operator CANMessageFrame(CanFrame frame)
         {
             if (frame.Type == FrameType.Error)
@@ -57,7 +78,7 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin.CanFrameCoders
         {
             Data,
             Remote,
-            Error,
+            Error
         }
     }
 }
