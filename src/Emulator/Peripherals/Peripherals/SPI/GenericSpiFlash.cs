@@ -4,6 +4,7 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
+
 using System.Collections.Generic;
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
@@ -12,7 +13,6 @@ using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Memory;
 using Antmicro.Renode.Peripherals.SPI.NORFlash;
 using Antmicro.Renode.Utilities;
-
 using Range = Antmicro.Renode.Core.Range;
 
 namespace Antmicro.Renode.Peripherals.SPI
@@ -25,13 +25,14 @@ namespace Antmicro.Renode.Peripherals.SPI
             // "Sector" here is the largest erasable memory unit. It's also named "block" by many flash memory vendors.
             int sectorSizeKB = DefaultSectorSizeKB)
         {
-            if(!Misc.IsPowerOfTwo((ulong)underlyingMemory.Size))
+            if (!Misc.IsPowerOfTwo((ulong)underlyingMemory.Size))
             {
                 throw new ConstructionException("Size of the underlying memory must be a power of 2");
             }
 
             volatileConfigurationRegister = new ByteRegister(this, 0xfb).WithFlag(3, name: "XIP");
-            nonVolatileConfigurationRegister = new WordRegister(this, 0xffff).WithEnumField<WordRegister, AddressingMode>(0, 1, out addressingMode, name: "addressWith3Bytes");
+            nonVolatileConfigurationRegister =
+                new WordRegister(this, 0xffff).WithEnumField<WordRegister, AddressingMode>(0, 1, out addressingMode, name: "addressWith3Bytes");
             enhancedVolatileConfigurationRegister = new ByteRegister(this, 0xff)
                 .WithValueField(0, 3, name: "Output driver strength")
                 .WithReservedBits(3, 1)
@@ -51,8 +52,6 @@ namespace Antmicro.Renode.Peripherals.SPI
                 .WithFlag(7, FieldMode.Read, valueProviderCallback: _ => true, name: "ProgramOrErase");
 
             sectorSize = sectorSizeKB.KB();
-            this.underlyingMemory = underlyingMemory;
-            underlyingMemory.ResetByte = EmptySegment;
 
             this.manufacturerId = manufacturerId;
             this.memoryType = memoryType;
@@ -67,7 +66,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         public void OnGPIO(int number, bool value)
         {
-            if(number == 0 && value)
+            if (number == 0 && value)
             {
                 this.Log(LogLevel.Noisy, "Chip Select is deasserted.");
                 FinishTransmission();
@@ -76,7 +75,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         public void FinishTransmission()
         {
-            switch(currentOperation.State)
+            switch (currentOperation.State)
             {
                 case DecodedOperation.OperationState.RecognizeOperation:
                 case DecodedOperation.OperationState.AccumulateCommandAddressBytes:
@@ -84,9 +83,10 @@ namespace Antmicro.Renode.Peripherals.SPI
                     this.Log(LogLevel.Warning, "Transmission finished in the unexpected state: {0}", currentOperation.State);
                     break;
             }
+
             // If an operation has at least 1 data byte or more than 0 address bytes,
             // we can clear the write enable flag only when we are finishing a transmission.
-            switch(currentOperation.Operation)
+            switch (currentOperation.Operation)
             {
                 case DecodedOperation.OperationType.Program:
                 case DecodedOperation.OperationType.Erase:
@@ -95,6 +95,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                     enable.Value = false;
                     break;
             }
+
             currentOperation.State = DecodedOperation.OperationState.RecognizeOperation;
             currentOperation = default(DecodedOperation);
             temporaryConfiguration = 0;
@@ -115,7 +116,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         public byte Transmit(byte data)
         {
             this.Log(LogLevel.Noisy, "Transmitting data 0x{0:X}, current state: {1}", data, currentOperation.State);
-            switch(currentOperation.State)
+            switch (currentOperation.State)
             {
                 case DecodedOperation.OperationState.RecognizeOperation:
                     // When the command is decoded, depending on the operation we will either start accumulating address bytes
@@ -134,10 +135,11 @@ namespace Antmicro.Renode.Peripherals.SPI
             }
 
             // Warning: commands without data require immediate handling after the address was accumulated
-            if(currentOperation.State == DecodedOperation.OperationState.HandleNoDataCommand)
+            if (currentOperation.State == DecodedOperation.OperationState.HandleNoDataCommand)
             {
                 HandleNoDataCommand();
             }
+
             return 0;
         }
 
@@ -145,26 +147,30 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         protected virtual void WriteToMemory(byte val)
         {
-            if(!TryVerifyWriteToMemory(out var position))
+            if (!TryVerifyWriteToMemory(out var position))
             {
                 return;
             }
+
             underlyingMemory.WriteByte(position, val);
         }
 
         protected bool TryVerifyWriteToMemory(out long position)
         {
             position = currentOperation.ExecutionAddress + currentOperation.CommandBytesHandled;
-            if(position > underlyingMemory.Size)
+            if (position > underlyingMemory.Size)
             {
-                this.Log(LogLevel.Error, "Cannot write to address 0x{0:X} because it is bigger than configured memory size.", currentOperation.ExecutionAddress);
+                this.Log(LogLevel.Error, "Cannot write to address 0x{0:X} because it is bigger than configured memory size.",
+                    currentOperation.ExecutionAddress);
                 return false;
             }
-            if(lockedRange.HasValue && lockedRange.Value.Contains((ulong)position))
+
+            if (lockedRange.HasValue && lockedRange.Value.Contains((ulong)position))
             {
                 this.Log(LogLevel.Error, "Cannot write to address 0x{0:X} because it is in the locked range", position);
                 return false;
             }
+
             return true;
         }
 
@@ -182,7 +188,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             // 0x22 - 256 MB
             byte capacityCode = 0;
 
-            if(underlyingMemory.Size <= 32.MB())
+            if (underlyingMemory.Size <= 32.MB())
             {
                 capacityCode = (byte)BitHelper.GetMostSignificantSetBitIndex((ulong)underlyingMemory.Size);
             }
@@ -201,7 +207,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         protected virtual int GetDummyBytes(Commands command)
         {
-            switch(command)
+            switch (command)
             {
                 case Commands.FastRead:
                     return 1;
@@ -219,7 +225,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private void AccumulateAddressBytes(byte addressByte, DecodedOperation.OperationState nextState)
         {
-            if(currentOperation.TryAccumulateAddress(addressByte))
+            if (currentOperation.TryAccumulateAddress(addressByte))
             {
                 this.Log(LogLevel.Noisy, "Address accumulated: 0x{0:X}", currentOperation.ExecutionAddress);
                 currentOperation.State = nextState;
@@ -244,7 +250,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             currentOperation.Operation = DecodedOperation.OperationType.None;
             currentOperation.State = DecodedOperation.OperationState.HandleCommand;
             currentOperation.DummyBytesRemaining = GetDummyBytes((Commands)firstByte);
-            switch(firstByte)
+            switch (firstByte)
             {
                 case (byte)Commands.ReadID:
                 case (byte)Commands.MultipleIoReadID:
@@ -402,11 +408,11 @@ namespace Antmicro.Renode.Peripherals.SPI
                     currentOperation.Register = (uint)Register.EnhancedVolatileConfiguration;
                     break;
                 case (byte)Commands.ResetEnable:
-                    // This command should allow ResetMemory to be executed
+                // This command should allow ResetMemory to be executed
                 case (byte)Commands.ResetMemory:
-                    // This command should reset volatile bits in configuration registers
+                // This command should reset volatile bits in configuration registers
                 case (byte)Commands.EnterDeepPowerDown:
-                    // This command should enter deep power-down mode
+                // This command should enter deep power-down mode
                 case (byte)Commands.ReleaseFromDeepPowerdown:
                     // This command should leave deep power-down mode, but some chips use a different mechanism
                     this.Log(LogLevel.Warning, "Unhandled parameterless command {0}", (Commands)firstByte);
@@ -415,13 +421,14 @@ namespace Antmicro.Renode.Peripherals.SPI
                     this.Log(LogLevel.Error, "Command decoding failed on byte: 0x{0:X} ({1}).", firstByte, (Commands)firstByte);
                     return;
             }
+
             this.Log(LogLevel.Noisy, "Decoded operation: {0}, write enabled {1}", currentOperation, enable.Value);
         }
 
         private byte HandleCommand(byte data)
         {
             byte result = 0;
-            if(currentOperation.DummyBytesRemaining > 0)
+            if (currentOperation.DummyBytesRemaining > 0)
             {
                 currentOperation.DummyBytesRemaining--;
                 this.Log(LogLevel.Noisy, "Handling dummy byte in {0} operation, {1} remaining after this one",
@@ -429,14 +436,14 @@ namespace Antmicro.Renode.Peripherals.SPI
                 return result;
             }
 
-            switch(currentOperation.Operation)
+            switch (currentOperation.Operation)
             {
                 case DecodedOperation.OperationType.ReadFast:
                 case DecodedOperation.OperationType.Read:
                     result = ReadFromMemory();
                     break;
                 case DecodedOperation.OperationType.ReadID:
-                    if(currentOperation.CommandBytesHandled < deviceData.Length)
+                    if (currentOperation.CommandBytesHandled < deviceData.Length)
                     {
                         result = deviceData[currentOperation.CommandBytesHandled];
                     }
@@ -445,12 +452,13 @@ namespace Antmicro.Renode.Peripherals.SPI
                         this.Log(LogLevel.Error, "Trying to read beyond the length of the device ID table.");
                         result = 0;
                     }
+
                     break;
                 case DecodedOperation.OperationType.ReadSerialFlashDiscoveryParameter:
                     result = GetSFDPByte();
                     break;
                 case DecodedOperation.OperationType.Program:
-                    if(enable.Value)
+                    if (enable.Value)
                     {
                         WriteToMemory(data);
                         result = data;
@@ -459,6 +467,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                     {
                         this.Log(LogLevel.Error, "Memory write operations are disabled.");
                     }
+
                     break;
                 case DecodedOperation.OperationType.ReadRegister:
                     result = ReadRegister((Register)currentOperation.Register);
@@ -470,6 +479,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                     this.Log(LogLevel.Warning, "Unhandled operation encountered while processing command bytes: {0}", currentOperation.Operation);
                     break;
             }
+
             currentOperation.CommandBytesHandled++;
             this.Log(LogLevel.Noisy, "Handled command: {0}, returning 0x{1:X}", currentOperation, result);
             return result;
@@ -477,7 +487,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private byte GetSFDPByte()
         {
-            if(currentOperation.ExecutionAddress >= SFDPSignature.Length)
+            if (currentOperation.ExecutionAddress >= SFDPSignature.Length)
             {
                 this.Log(LogLevel.Warning, "Tried to read SFDP signature byte out of range at position {0}", currentOperation.ExecutionAddress);
                 return 0;
@@ -490,29 +500,32 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private void WriteRegister(Register register, byte data)
         {
-            if(!enable.Value)
+            if (!enable.Value)
             {
                 this.Log(LogLevel.Error, "Trying to write a register, but write enable latch is not set");
                 return;
             }
-            switch(register)
+
+            switch (register)
             {
                 case Register.VolatileConfiguration:
                     volatileConfigurationRegister.Write(0, data);
                     break;
                 case Register.NonVolatileConfiguration:
                 case Register.Configuration:
-                    if((currentOperation.CommandBytesHandled) >= 2)
+                    if ((currentOperation.CommandBytesHandled) >= 2)
                     {
                         this.Log(LogLevel.Error, "Trying to write to register {0} with more than expected 2 bytes.", register);
                         break;
                     }
+
                     BitHelper.UpdateWithShifted(ref temporaryConfiguration, data, currentOperation.CommandBytesHandled * 8, 8);
-                    if(currentOperation.CommandBytesHandled == 1)
+                    if (currentOperation.CommandBytesHandled == 1)
                     {
                         var targetReg = register == Register.Configuration ? configurationRegister : nonVolatileConfigurationRegister;
                         targetReg.Write(0, (ushort)temporaryConfiguration);
                     }
+
                     break;
                 //listing all cases as other registers are not writable at all
                 case Register.EnhancedVolatileConfiguration:
@@ -532,7 +545,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private byte ReadRegister(Register register)
         {
-            switch(register)
+            switch (register)
             {
                 case Register.Status:
                     // The documentation states that at least 1 byte will be read
@@ -550,11 +563,12 @@ namespace Antmicro.Renode.Peripherals.SPI
                 case Register.Configuration:
                     // The documentation states that at least 2 bytes will be read
                     // After all 16 bits of the register have been read, 0 is returned
-                    if((currentOperation.CommandBytesHandled) < 2)
+                    if ((currentOperation.CommandBytesHandled) < 2)
                     {
                         var sourceReg = register == Register.Configuration ? configurationRegister : nonVolatileConfigurationRegister;
                         return (byte)BitHelper.GetValue(sourceReg.Read(), currentOperation.CommandBytesHandled * 8, 8);
                     }
+
                     return 0;
                 case Register.EnhancedVolatileConfiguration:
                     return enhancedVolatileConfigurationRegister.Read();
@@ -569,17 +583,19 @@ namespace Antmicro.Renode.Peripherals.SPI
         {
             // The documentation describes more commands that don't have any data bytes (just code + address)
             // but at the moment we have implemented just these ones
-            switch(currentOperation.Operation)
+            switch (currentOperation.Operation)
             {
                 case DecodedOperation.OperationType.Erase:
-                    if(enable.Value)
+                    if (enable.Value)
                     {
-                        if(currentOperation.ExecutionAddress >= underlyingMemory.Size)
+                        if (currentOperation.ExecutionAddress >= underlyingMemory.Size)
                         {
-                            this.Log(LogLevel.Error, "Cannot erase memory because current address 0x{0:X} exceeds configured memory size.", currentOperation.ExecutionAddress);
+                            this.Log(LogLevel.Error, "Cannot erase memory because current address 0x{0:X} exceeds configured memory size.",
+                                currentOperation.ExecutionAddress);
                             return;
                         }
-                        switch(currentOperation.EraseSize)
+
+                        switch (currentOperation.EraseSize)
                         {
                             case DecodedOperation.OperationEraseSize.Subsector4K:
                                 EraseSegment(4.KB());
@@ -602,6 +618,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                     {
                         this.Log(LogLevel.Error, "Erase operations are disabled.");
                     }
+
                     break;
                 default:
                     this.Log(LogLevel.Warning, "Encountered unexpected command: {0}", currentOperation);
@@ -612,11 +629,12 @@ namespace Antmicro.Renode.Peripherals.SPI
         private void EraseChip()
         {
             // Don't allow erasing the chip if range protection is enabled
-            if(lockedRange.HasValue)
+            if (lockedRange.HasValue)
             {
                 this.Log(LogLevel.Error, "Chip erase can only be performed when there is no locked range");
                 return;
             }
+
             underlyingMemory.ZeroAll();
         }
 
@@ -631,10 +649,11 @@ namespace Antmicro.Renode.Peripherals.SPI
         private void EraseRangeUnchecked(Range range)
         {
             var segment = new byte[range.Size];
-            for(ulong i = 0; i < range.Size; i++)
+            for (ulong i = 0; i < range.Size; i++)
             {
                 segment[i] = EmptySegment;
             }
+
             underlyingMemory.WriteBytes((long)range.StartAddress, segment);
         }
 
@@ -645,7 +664,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             var position = segmentSize * (currentOperation.ExecutionAddress / segmentSize);
             var segmentToErase = new Range((ulong)position, (ulong)segmentSize);
             this.Log(LogLevel.Noisy, "Full segment to erase: {0}", segmentToErase);
-            foreach(var subrange in lockedRange.HasValue ? segmentToErase.Subtract(lockedRange.Value) : new List<Range>() { segmentToErase })
+            foreach (var subrange in lockedRange.HasValue ? segmentToErase.Subtract(lockedRange.Value) : new List<Range>() { segmentToErase })
             {
                 this.Log(LogLevel.Noisy, "Erasing subrange {0}", subrange);
                 EraseRangeUnchecked(subrange);
@@ -654,14 +673,15 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private byte ReadFromMemory()
         {
-            if(currentOperation.ExecutionAddress + currentOperation.CommandBytesHandled > underlyingMemory.Size)
+            if (currentOperation.ExecutionAddress + currentOperation.CommandBytesHandled > underlyingMemory.Size)
             {
-                this.Log(LogLevel.Error, "Cannot read from address 0x{0:X} because it is bigger than configured memory size.", currentOperation.ExecutionAddress);
+                this.Log(LogLevel.Error, "Cannot read from address 0x{0:X} because it is bigger than configured memory size.",
+                    currentOperation.ExecutionAddress);
                 return 0;
             }
 
             var position = currentOperation.ExecutionAddress + currentOperation.CommandBytesHandled;
-            return  underlyingMemory.ReadByte(position);
+            return underlyingMemory.ReadByte(position);
         }
 
         // The addressingMode field is 1-bit wide, so a conditional expression covers all possible cases
@@ -685,10 +705,10 @@ namespace Antmicro.Renode.Peripherals.SPI
         private readonly byte extendedDeviceId;
         private readonly byte deviceConfiguration;
         private const byte EmptySegment = 0xff;
-        private const byte DeviceGeneration = 0x1;      // 2nd generation
+        private const byte DeviceGeneration = 0x1; // 2nd generation
         private const byte DefaultRemainingIDBytes = 0x10;
         private const byte DefaultExtendedDeviceID = DeviceGeneration << 6;
-        private const byte DefaultDeviceConfiguration = 0x0;   // standard
+        private const byte DefaultDeviceConfiguration = 0x0; // standard
         private const int DefaultSectorSizeKB = 64;
 
         // Dummy SFDP header: 0 parameter tables, one empty required
