@@ -30,8 +30,8 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
 
     public static class MqttCanBridgeExtensions
     {
-        public static void CreateMqttCanBridge(this IMachine machine, string name, string brokerUri = "mqtt://localhost:1883", byte channel = 0,
-            string format = "json", uint optionalFields = 0)
+        public static void CreateMqttCanBridge(this IMachine machine, string name, string format = "json", string brokerUri = "mqtt://localhost:1883",
+            byte channel = 0, uint optionalFields = 0)
         {
             var coder = CreateCoder(format, optionalFields);
             var bridge = new MqttCanBridge(brokerUri, channel, coder);
@@ -52,6 +52,10 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
             {
                 case "json":
                     return new JsonCanFrameCoder(pubId, pubCnt, timeStamp);
+                case "binary":
+                    if (pubId || pubCnt || timeStamp)
+                        throw new ConstructionException("Optional fields are not supported in binary format");
+                    return new BinaryCanFrameCoder();
                 default:
                     throw new ConstructionException($"Unsupported format '{format}'");
             }
