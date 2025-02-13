@@ -51,6 +51,8 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin
                     if (pubId || pubCnt || timeStamp)
                         throw new ConstructionException("Optional fields are not supported in binary format");
                     return new BinaryCanFrameCoder();
+                case "protobuf":
+                    return new ProtoCanFrameCoder(pubId, pubCnt, timeStamp);
                 default:
                     throw new ConstructionException($"Unsupported format '{format}'");
             }

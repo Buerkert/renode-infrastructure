@@ -1,0 +1,26 @@
+syntax = "proto2";
+package Antmicro.Renode.Plugins.MqttCanBridgePlugin.CanFrameCoders.Proto;
+
+message CanFrame {
+  message DataFrame {
+    required uint32 cobId = 1;
+    required bytes data = 2;
+  }
+
+  message RemoteFrame {
+    required uint32 cobId = 1;
+  }
+
+  message ErrorFrame {
+  }
+
+  optional uint32 pubId = 1;      /// Unique ID of the publisher
+  optional uint32 pubCnt = 2;     /// Counter of the publisher
+  optional uint64 timestamp = 3;  /// Timestamp of the frame in us since epoch
+  oneof frame {
+    DataFrame dataFrame = 4;
+    RemoteFrame remoteFrame = 5;
+    ErrorFrame errorFrame = 6;
+  }
+
+}

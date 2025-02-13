@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Antmicro.Renode.Core.CAN;
 using Antmicro.Renode.Utilities;
 

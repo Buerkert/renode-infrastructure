@@ -81,7 +81,7 @@ namespace Antmicro.Renode.Plugins.MqttCanBridgePlugin.CanFrameCoders
 
             var cobId = (ushort)((data[(int)BytePos.CobIdHigh] << 8) | data[(int)BytePos.CobIdLow]);
             if (cobId > MaxCobId)
-                throw new ArgumentException($"CobId must be at most 0x{MaxCobId:X} bits");
+                throw new ArgumentException($"CobId must be at most 0x{MaxCobId:X}");
 
             byte[] frameData = null;
             CanFrame.FrameType frameType;

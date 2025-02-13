@@ -8,11 +8,19 @@
     </PropertyGroup>
     <Import Project="$(PropertiesLocation)"/>
     <ItemGroup>
+        <Protobuf Include="CanFrameCoders\ProtoCanFrame.proto" GrpcServices="None"/>
+    </ItemGroup>
+    <ItemGroup>
         <ProjectReference Include="..\..\Emulator\Main\Emulator_NET.csproj"/>
         <ProjectReference Include="..\..\Emulator\Extensions\Extensions_NET.csproj"/>
         <ProjectReference Include="..\..\..\..\..\lib\AntShell\AntShell\AntShell_NET.csproj"/>
     </ItemGroup>
     <ItemGroup>
+      <PackageReference Include="Google.Protobuf" Version="3.29.3" />
+      <PackageReference Include="Grpc.Tools" Version="2.69.0">
+        <PrivateAssets>all</PrivateAssets>
+        <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      </PackageReference>
       <PackageReference Include="MQTTnet" Version="4.3.7.1207" />
       <PackageReference Include="Newtonsoft.Json" Version="9.0.1" />
     </ItemGroup>
