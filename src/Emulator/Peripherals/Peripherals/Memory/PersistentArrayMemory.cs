@@ -12,13 +12,31 @@ using Antmicro.Renode.Logging;
 
 namespace Antmicro.Renode.Peripherals.Memory
 {
+    /// <summary>
+    /// Represents a memory that can be linked to a file. The memory can either be saved manually or automatically when disposed.
+    /// </summary>
     public class PersistentArrayMemory : ArrayMemory, IDisposable
     {
-        public PersistentArrayMemory(int size, string path = null, byte paddingVal = 0) : base(size)
+        /// <summary>
+        /// Creates a new instance of the memory and try to link to file if path is provided.
+        /// </summary>
+        /// <param name="size">Size of the memory in bytes.</param>
+        /// <param name="path">Path to the file to link to.</param>
+        /// <param name="create">If true, the file doesnt have to exist and the memory will be filled with <paramref name="paddingVal"/></param>
+        /// <param name="sameSize">If true, the file must have the same size as the memory, otherwise the file content will be truncated or padded with <paramref name="paddingVal"/></param>
+        /// <param name="paddingVal">Value to fill the memory with if the file is too small or does not exist.</param>
+        public PersistentArrayMemory(int size, string path = null, bool create = true, bool sameSize = true, byte paddingVal = 0) : base(size)
         {
             this.paddingVal = paddingVal;
-            if (path != null)
-                LinkFile(path);
+            try
+            {
+                if (path != null)
+                    LinkFile(path, create, sameSize);
+            }
+            catch (RecoverableException e)
+            {
+                throw new ConstructionException($"Failed to link file: {e.Message}", e);
+            }
         }
 
         public void Dispose()
@@ -36,6 +54,13 @@ namespace Antmicro.Renode.Peripherals.Memory
             }
         }
 
+        /// <summary>
+        /// Links the memory to a file and copies the file content to the memory.
+        /// If previous file was it will be overwritten without saving.
+        /// </summary>
+        /// <param name="linkPath">Path to the file to link to.</param>
+        /// <param name="create">If true, the file doesnt have to exist and the memory will be filled with <see cref="paddingVal"/></param>
+        /// <param name="sameSize">If true, the file must have the same size as the memory, otherwise the file content will be truncated or padded with <see cref="paddingVal"/></param>
         public void LinkFile(string linkPath, bool create = true, bool sameSize = true)
         {
             try
@@ -76,8 +101,20 @@ namespace Antmicro.Renode.Peripherals.Memory
             this.Log(LogLevel.Debug, $"Linked memory to file '{linkPath}'");
         }
 
-        public void UnlinkFile() => LinkedPath = null;
+        /// <summary>
+        /// Unlinks the memory from the file.
+        /// The memory content is not saved to the file.
+        /// </summary>
+        public void UnlinkFile()
+        {
+            this.Log(LogLevel.Debug, $"Unlinking memory from file '{LinkedPath}'");
+            LinkedPath = null;
+        }
 
+        /// <summary>
+        /// Saves the memory content to the linked file.
+        /// If the memory is not linked to any file, an exception is thrown.
+        /// </summary>
         public void SaveToFile()
         {
             if (LinkedPath == null)
