@@ -5,11 +5,15 @@
 // Full license text is available in 'licenses/MIT.txt'.
 //
 
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using Antmicro.Renode.Core;
+using Antmicro.Renode.Core.Structure;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
+using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Peripherals.Memory;
 using Antmicro.Renode.Peripherals.SPI.NORFlash;
 using Antmicro.Renode.Utilities;
@@ -17,17 +21,18 @@ using Range = Antmicro.Renode.Core.Range;
 
 namespace Antmicro.Renode.Peripherals.SPI
 {
-    public class GenericSpiFlash : ISPIPeripheral, IGPIOReceiver
+    public class GenericSpiFlash : ISPIPeripheral, IGPIOReceiver, IBytePeripheral, IPeripheralRegister<IKnownSize, BusPointRegistration>,
+        IPeripheralRegister<IBytePeripheral, BusRangeRegistration>
     {
-        public GenericSpiFlash(MappedMemory underlyingMemory, byte manufacturerId, byte memoryType,
+        public GenericSpiFlash(IMachine machine, long size, byte manufacturerId, byte memoryType,
             bool writeStatusCanSetWriteEnable = true, byte extendedDeviceId = DefaultExtendedDeviceID,
             byte deviceConfiguration = DefaultDeviceConfiguration, byte remainingIdBytes = DefaultRemainingIDBytes,
             // "Sector" here is the largest erasable memory unit. It's also named "block" by many flash memory vendors.
             int sectorSizeKB = DefaultSectorSizeKB)
         {
-            if (!Misc.IsPowerOfTwo((ulong)underlyingMemory.Size))
+            if (!Misc.IsPowerOfTwo((ulong)size))
             {
-                throw new ConstructionException("Size of the underlying memory must be a power of 2");
+                throw new ConstructionException("Size of the memory must be a power of 2");
             }
 
             volatileConfigurationRegister = new ByteRegister(this, 0xfb).WithFlag(3, name: "XIP");
@@ -53,6 +58,8 @@ namespace Antmicro.Renode.Peripherals.SPI
 
             sectorSize = sectorSizeKB.KB();
 
+            this.machine = machine;
+            Size = size;
             this.manufacturerId = manufacturerId;
             this.memoryType = memoryType;
             this.capacityCode = GetCapacityCode();
@@ -143,7 +150,65 @@ namespace Antmicro.Renode.Peripherals.SPI
             return 0;
         }
 
-        public MappedMemory UnderlyingMemory => underlyingMemory;
+        public long Size { get; }
+
+        public byte ReadByte(long offset)
+        {
+            var found = GetMemoryForAddress(offset);
+            if (!found.HasValue)
+                return EmptySegment;
+            var (relOffset, mem) = found.Value;
+            return mem.ReadByte(relOffset);
+        }
+
+        public void WriteByte(long offset, byte value)
+        {
+            var found = GetMemoryForAddress(offset);
+            if (!found.HasValue)
+                return;
+            var (relOffset, mem) = found.Value;
+            mem.WriteByte(relOffset, value);
+        }
+
+        public void Register(IKnownSize peripheral, BusPointRegistration registrationPoint)
+        {
+            if (!(peripheral is IBytePeripheral bytePeripheral))
+                throw new RegistrationException($"Cannot register peripheral {peripheral} because it does not implement IBytePeripheral interface");
+            Register(bytePeripheral,
+                new BusRangeRegistration(new Range(registrationPoint.StartingPoint, checked((ulong)peripheral.Size)), registrationPoint.Offset,
+                    registrationPoint.CPU, registrationPoint.Cluster));
+        }
+
+        public void Unregister(IKnownSize peripheral)
+        {
+            if (!(peripheral is IBytePeripheral bytePeripheral))
+                throw new RegistrationException($"Cannot unregister peripheral {peripheral} because it does not implement IBytePeripheral interface");
+            Unregister(bytePeripheral);
+        }
+
+        public void Register(IBytePeripheral peripheral, BusRangeRegistration registrationPoint)
+        {
+            var range = registrationPoint.Range;
+            var alreadyRegistered = memoryMap.Find(x => x.Item2 == peripheral);
+            if (!alreadyRegistered.Equals(default))
+                throw new RegistrationException(
+                    $"Cannot register peripheral {peripheral} at range {range} because it is already registered at {alreadyRegistered.Item1}");
+            var collides = memoryMap.Find(x => x.Item1.Intersects(range));
+            if (!collides.Equals(default))
+                throw new RegistrationException($"Cannot register peripheral {peripheral} at range {range} because it collides with {collides.Item2}");
+
+            memoryMap.Add((range, peripheral));
+            machine.RegisterAsAChildOf(this, peripheral, registrationPoint);
+        }
+
+        public void Unregister(IBytePeripheral peripheral)
+        {
+            machine.UnregisterAsAChildOf(this, peripheral);
+            var entry = memoryMap.Find(x => x.Item2 == peripheral);
+            if (entry.Equals(default))
+                throw new RegistrationException($"Cannot unregister peripheral {peripheral} because it is not registered");
+            memoryMap.Remove(entry);
+        }
 
         protected virtual void WriteToMemory(byte val)
         {
@@ -152,13 +217,13 @@ namespace Antmicro.Renode.Peripherals.SPI
                 return;
             }
 
-            underlyingMemory.WriteByte(position, val);
+            WriteByte(position, val);
         }
 
         protected bool TryVerifyWriteToMemory(out long position)
         {
             position = currentOperation.ExecutionAddress + currentOperation.CommandBytesHandled;
-            if (position > underlyingMemory.Size)
+            if (position > Size)
             {
                 this.Log(LogLevel.Error, "Cannot write to address 0x{0:X} because it is bigger than configured memory size.",
                     currentOperation.ExecutionAddress);
@@ -188,13 +253,13 @@ namespace Antmicro.Renode.Peripherals.SPI
             // 0x22 - 256 MB
             byte capacityCode = 0;
 
-            if (underlyingMemory.Size <= 32.MB())
+            if (Size <= 32.MB())
             {
-                capacityCode = (byte)BitHelper.GetMostSignificantSetBitIndex((ulong)underlyingMemory.Size);
+                capacityCode = (byte)BitHelper.GetMostSignificantSetBitIndex((ulong)Size);
             }
             else
             {
-                capacityCode = (byte)((BitHelper.GetMostSignificantSetBitIndex((ulong)underlyingMemory.Size) - 26) + 0x20);
+                capacityCode = (byte)((BitHelper.GetMostSignificantSetBitIndex((ulong)Size) - 26) + 0x20);
             }
 
             return capacityCode;
@@ -221,7 +286,6 @@ namespace Antmicro.Renode.Peripherals.SPI
         protected readonly int sectorSize;
         protected readonly ByteRegister statusRegister;
         protected readonly WordRegister configurationRegister;
-        protected readonly MappedMemory underlyingMemory;
 
         private void AccumulateAddressBytes(byte addressByte, DecodedOperation.OperationState nextState)
         {
@@ -369,43 +433,43 @@ namespace Antmicro.Renode.Peripherals.SPI
                     break;
                 case (byte)Commands.ReadStatusRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.ReadRegister;
-                    currentOperation.Register = (uint)Register.Status;
+                    currentOperation.Register = (uint)Registers.Status;
                     break;
                 case (byte)Commands.ReadConfigurationRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.ReadRegister;
-                    currentOperation.Register = (uint)Register.Configuration;
+                    currentOperation.Register = (uint)Registers.Configuration;
                     break;
                 case (byte)Commands.WriteStatusRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.WriteRegister;
-                    currentOperation.Register = (uint)Register.Status;
+                    currentOperation.Register = (uint)Registers.Status;
                     break;
                 case (byte)Commands.ReadFlagStatusRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.ReadRegister;
-                    currentOperation.Register = (uint)Register.FlagStatus;
+                    currentOperation.Register = (uint)Registers.FlagStatus;
                     break;
                 case (byte)Commands.ReadVolatileConfigurationRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.ReadRegister;
-                    currentOperation.Register = (uint)Register.VolatileConfiguration;
+                    currentOperation.Register = (uint)Registers.VolatileConfiguration;
                     break;
                 case (byte)Commands.WriteVolatileConfigurationRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.WriteRegister;
-                    currentOperation.Register = (uint)Register.VolatileConfiguration;
+                    currentOperation.Register = (uint)Registers.VolatileConfiguration;
                     break;
                 case (byte)Commands.ReadNonVolatileConfigurationRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.ReadRegister;
-                    currentOperation.Register = (uint)Register.NonVolatileConfiguration;
+                    currentOperation.Register = (uint)Registers.NonVolatileConfiguration;
                     break;
                 case (byte)Commands.WriteNonVolatileConfigurationRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.WriteRegister;
-                    currentOperation.Register = (uint)Register.NonVolatileConfiguration;
+                    currentOperation.Register = (uint)Registers.NonVolatileConfiguration;
                     break;
                 case (byte)Commands.ReadEnhancedVolatileConfigurationRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.ReadRegister;
-                    currentOperation.Register = (uint)Register.EnhancedVolatileConfiguration;
+                    currentOperation.Register = (uint)Registers.EnhancedVolatileConfiguration;
                     break;
                 case (byte)Commands.WriteEnhancedVolatileConfigurationRegister:
                     currentOperation.Operation = DecodedOperation.OperationType.WriteRegister;
-                    currentOperation.Register = (uint)Register.EnhancedVolatileConfiguration;
+                    currentOperation.Register = (uint)Registers.EnhancedVolatileConfiguration;
                     break;
                 case (byte)Commands.ResetEnable:
                 // This command should allow ResetMemory to be executed
@@ -470,10 +534,10 @@ namespace Antmicro.Renode.Peripherals.SPI
 
                     break;
                 case DecodedOperation.OperationType.ReadRegister:
-                    result = ReadRegister((Register)currentOperation.Register);
+                    result = ReadRegister((Registers)currentOperation.Register);
                     break;
                 case DecodedOperation.OperationType.WriteRegister:
-                    WriteRegister((Register)currentOperation.Register, data);
+                    WriteRegister((Registers)currentOperation.Register, data);
                     break;
                 default:
                     this.Log(LogLevel.Warning, "Unhandled operation encountered while processing command bytes: {0}", currentOperation.Operation);
@@ -498,7 +562,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             return output;
         }
 
-        private void WriteRegister(Register register, byte data)
+        private void WriteRegister(Registers register, byte data)
         {
             if (!enable.Value)
             {
@@ -508,11 +572,11 @@ namespace Antmicro.Renode.Peripherals.SPI
 
             switch (register)
             {
-                case Register.VolatileConfiguration:
+                case Registers.VolatileConfiguration:
                     volatileConfigurationRegister.Write(0, data);
                     break;
-                case Register.NonVolatileConfiguration:
-                case Register.Configuration:
+                case Registers.NonVolatileConfiguration:
+                case Registers.Configuration:
                     if ((currentOperation.CommandBytesHandled) >= 2)
                     {
                         this.Log(LogLevel.Error, "Trying to write to register {0} with more than expected 2 bytes.", register);
@@ -522,19 +586,19 @@ namespace Antmicro.Renode.Peripherals.SPI
                     BitHelper.UpdateWithShifted(ref temporaryConfiguration, data, currentOperation.CommandBytesHandled * 8, 8);
                     if (currentOperation.CommandBytesHandled == 1)
                     {
-                        var targetReg = register == Register.Configuration ? configurationRegister : nonVolatileConfigurationRegister;
+                        var targetReg = register == Registers.Configuration ? configurationRegister : nonVolatileConfigurationRegister;
                         targetReg.Write(0, (ushort)temporaryConfiguration);
                     }
 
                     break;
                 //listing all cases as other registers are not writable at all
-                case Register.EnhancedVolatileConfiguration:
+                case Registers.EnhancedVolatileConfiguration:
                     enhancedVolatileConfigurationRegister.Write(0, data);
                     break;
-                case Register.Status:
+                case Registers.Status:
                     statusRegister.Write(0, data);
                     // Switch to the Configuration register and write from its start
-                    currentOperation.Register = (uint)Register.Configuration;
+                    currentOperation.Register = (uint)Registers.Configuration;
                     currentOperation.CommandBytesHandled--;
                     break;
                 default:
@@ -543,36 +607,36 @@ namespace Antmicro.Renode.Peripherals.SPI
             }
         }
 
-        private byte ReadRegister(Register register)
+        private byte ReadRegister(Registers register)
         {
             switch (register)
             {
-                case Register.Status:
+                case Registers.Status:
                     // The documentation states that at least 1 byte will be read
                     // If more than 1 byte is read, the same byte is returned
                     return statusRegister.Read();
-                case Register.FlagStatus:
+                case Registers.FlagStatus:
                     // The documentation states that at least 1 byte will be read
                     // If more than 1 byte is read, the same byte is returned
                     return flagStatusRegister.Read();
-                case Register.VolatileConfiguration:
+                case Registers.VolatileConfiguration:
                     // The documentation states that at least 1 byte will be read
                     // If more than 1 byte is read, the same byte is returned
                     return volatileConfigurationRegister.Read();
-                case Register.NonVolatileConfiguration:
-                case Register.Configuration:
+                case Registers.NonVolatileConfiguration:
+                case Registers.Configuration:
                     // The documentation states that at least 2 bytes will be read
                     // After all 16 bits of the register have been read, 0 is returned
                     if ((currentOperation.CommandBytesHandled) < 2)
                     {
-                        var sourceReg = register == Register.Configuration ? configurationRegister : nonVolatileConfigurationRegister;
+                        var sourceReg = register == Registers.Configuration ? configurationRegister : nonVolatileConfigurationRegister;
                         return (byte)BitHelper.GetValue(sourceReg.Read(), currentOperation.CommandBytesHandled * 8, 8);
                     }
 
                     return 0;
-                case Register.EnhancedVolatileConfiguration:
+                case Registers.EnhancedVolatileConfiguration:
                     return enhancedVolatileConfigurationRegister.Read();
-                case Register.ExtendedAddress:
+                case Registers.ExtendedAddress:
                 default:
                     this.Log(LogLevel.Warning, "Trying to read from unsupported register \"{0}\"", register);
                     return 0;
@@ -588,7 +652,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                 case DecodedOperation.OperationType.Erase:
                     if (enable.Value)
                     {
-                        if (currentOperation.ExecutionAddress >= underlyingMemory.Size)
+                        if (currentOperation.ExecutionAddress >= Size)
                         {
                             this.Log(LogLevel.Error, "Cannot erase memory because current address 0x{0:X} exceeds configured memory size.",
                                 currentOperation.ExecutionAddress);
@@ -635,7 +699,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                 return;
             }
 
-            underlyingMemory.ZeroAll();
+            EraseRange(new Range(0, (ulong)Size));
         }
 
         private void EraseDie()
@@ -648,13 +712,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private void EraseRangeUnchecked(Range range)
         {
-            var segment = new byte[range.Size];
-            for (ulong i = 0; i < range.Size; i++)
-            {
-                segment[i] = EmptySegment;
-            }
-
-            underlyingMemory.WriteBytes((long)range.StartAddress, segment);
+            EraseRange(range);
         }
 
         private void EraseSegment(int segmentSize)
@@ -673,7 +731,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private byte ReadFromMemory()
         {
-            if (currentOperation.ExecutionAddress + currentOperation.CommandBytesHandled > underlyingMemory.Size)
+            if (currentOperation.ExecutionAddress + currentOperation.CommandBytesHandled > Size)
             {
                 this.Log(LogLevel.Error, "Cannot read from address 0x{0:X} because it is bigger than configured memory size.",
                     currentOperation.ExecutionAddress);
@@ -681,8 +739,43 @@ namespace Antmicro.Renode.Peripherals.SPI
             }
 
             var position = currentOperation.ExecutionAddress + currentOperation.CommandBytesHandled;
-            return underlyingMemory.ReadByte(position);
+            return ReadByte(position);
         }
+
+        private (long, IBytePeripheral)? GetMemoryForAddress(long address)
+        {
+            var match = memoryMap.Find(x => x.Item1.Contains((ulong)address));
+            if (!match.Equals(default))
+                return (address - (long)match.Item1.StartAddress, match.Item2);
+            this.Log(LogLevel.Warning, "No memory found for address 0x{0:X}", address);
+            return null;
+        }
+
+        private void EraseRange(Range range)
+        {
+            foreach (var (memRange, mem) in memoryMap)
+            {
+                var intersection = range.Intersect(memRange);
+                if (!intersection.HasValue)
+                    continue;
+                var offset = checked(intersection.Value.StartAddress - memRange.StartAddress);
+                if (mem is IMultibyteWritePeripheral multibyteWritePeripheral)
+                {
+                    var vals = new byte[intersection.Value.Size];
+                    Array.Fill(vals, EmptySegment);
+                    multibyteWritePeripheral.WriteBytes((long)offset, vals, 0, vals.Length);
+                }
+                else
+                {
+                    for (ulong i = 0; i < intersection.Value.Size; i++)
+                    {
+                        mem.WriteByte((long)(offset + i), EmptySegment);
+                    }
+                }
+            }
+        }
+
+        private List<(Range, IBytePeripheral)> memoryMap = new List<(Range, IBytePeripheral)>();
 
         // The addressingMode field is 1-bit wide, so a conditional expression covers all possible cases
         private int NumberOfAddressBytes => addressingMode.Value == AddressingMode.ThreeByte ? 3 : 4;
@@ -698,6 +791,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         private readonly ByteRegister volatileConfigurationRegister;
         private readonly ByteRegister enhancedVolatileConfigurationRegister;
         private readonly WordRegister nonVolatileConfigurationRegister;
+        private readonly IMachine machine;
         private readonly byte manufacturerId;
         private readonly byte memoryType;
         private readonly byte capacityCode;
@@ -852,7 +946,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             ThreeByte = 0x1
         }
 
-        private enum Register : uint
+        private enum Registers : uint
         {
             Status = 1, //starting from 1 to leave 0 as an unused value
             Configuration,

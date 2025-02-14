@@ -5,6 +5,7 @@
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
+using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Peripherals.Memory;
 
@@ -14,8 +15,8 @@ namespace Antmicro.Renode.Peripherals.SPI
 {
     public class Macronix_MX25R : GenericSpiFlash
     {
-        public Macronix_MX25R(MappedMemory underlyingMemory)
-            : base(underlyingMemory, manufacturerId: ManufacturerId, memoryType: MemoryType,
+        public Macronix_MX25R(IMachine machine, long size)
+            : base(machine, size, manufacturerId: ManufacturerId, memoryType: MemoryType,
                    writeStatusCanSetWriteEnable: false)
         {
             statusRegister
@@ -41,8 +42,8 @@ namespace Antmicro.Renode.Peripherals.SPI
             {
                 return;
             }
-            var currentVal = underlyingMemory.ReadByte(position);
-            underlyingMemory.WriteByte(position, (byte)(val & currentVal));
+            var currentVal = ReadByte(position);
+            WriteByte(position, (byte)(val & currentVal));
         }
 
         private void UpdateLockedRange(uint blockProtectionValue)
@@ -59,8 +60,8 @@ namespace Antmicro.Renode.Peripherals.SPI
             var protectedSectorCount = 1 << protectedSectorShift;
 
             // Protected sectors can cover the whole flash.
-            var protectedSize = Math.Min(sectorSize * protectedSectorCount, UnderlyingMemory.Size);
-            var start = topBottom.Value ? 0 : UnderlyingMemory.Size - protectedSize;
+            var protectedSize = Math.Min(sectorSize * protectedSectorCount, Size);
+            var start = topBottom.Value ? 0 : Size - protectedSize;
             lockedRange = new Range((ulong)start, (ulong)protectedSize);
         }
 

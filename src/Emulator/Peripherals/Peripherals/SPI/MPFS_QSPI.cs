@@ -10,6 +10,7 @@ using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure;
 using Antmicro.Renode.Core.Structure.Registers;
 using System.Collections.Generic;
+using Antmicro.Renode.Core.Extensions;
 using Antmicro.Renode.Utilities;
 using Antmicro.Renode.Logging;
 
@@ -164,7 +165,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         public uint ReadDoubleWord(long offset)
         {
             return xipMode.Value
-                ? RegisteredPeripheral.UnderlyingMemory.ReadDoubleWord(BitHelper.SetMaskedValue((uint)offset, (uint)upperAddress.Value, 24, 8))
+                ? RegisteredPeripheral.ReadDoubleWordUsingByte(BitHelper.SetMaskedValue((uint)offset, (uint)upperAddress.Value, 24, 8))
                 : registers.Read(offset);
         }
 

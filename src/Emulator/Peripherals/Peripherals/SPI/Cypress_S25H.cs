@@ -5,6 +5,7 @@
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System.Collections.Generic;
+using Antmicro.Renode.Core;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Peripherals.Memory;
 using Antmicro.Renode.Utilities;
@@ -13,13 +14,13 @@ namespace Antmicro.Renode.Peripherals.SPI
 {
     public class Cypress_S25H : GenericSpiFlash
     {
-        public Cypress_S25H(MappedMemory underlyingMemory, S25HxFamily memoryFamily = S25HxFamily.HS_T)
-            : base(underlyingMemory, manufacturerId: ManufacturerId, memoryType: (byte)memoryFamily,
+        public Cypress_S25H(IMachine machine, long size, S25HxFamily memoryFamily = S25HxFamily.HS_T)
+            : base(machine, size, manufacturerId: ManufacturerId, memoryType: (byte)memoryFamily,
                    writeStatusCanSetWriteEnable: true, extendedDeviceId: ExtendedDeviceID,
                    remainingIdBytes: RemainingIDBytes, deviceConfiguration: DeviceConfiguration,
                    sectorSizeKB: SectorSizeKB)
         {
-            if(underlyingMemory.Size < 32.MB() || underlyingMemory.Size > 128.MB())
+            if(size < 32.MB() || size > 128.MB())
             {
                 throw new ConstructionException("Size of the underlying memory must be in range 32MB - 128MB");
             }
@@ -29,7 +30,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         {
             // S25Hx family of flash chips ignore assumption that 64 MB and larger memories
             // has capacity codes starting from 0x20, leaving a gap from 0x1A to 0x1F.
-            return (byte)BitHelper.GetMostSignificantSetBitIndex((ulong)this.UnderlyingMemory.Size);
+            return (byte)BitHelper.GetMostSignificantSetBitIndex((ulong)Size);
         }
 
         protected override byte[] GetSFDPSignature()

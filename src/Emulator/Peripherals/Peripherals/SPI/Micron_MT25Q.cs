@@ -4,6 +4,8 @@
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
 //
+
+using Antmicro.Renode.Core;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Peripherals.Memory;
 using Antmicro.Renode.Utilities;
@@ -12,13 +14,13 @@ namespace Antmicro.Renode.Peripherals.SPI
 {
     public class Micron_MT25Q : GenericSpiFlash
     {
-        public Micron_MT25Q(MappedMemory underlyingMemory, byte extendedDeviceId = DefaultExtendedDeviceId)
-            : base(underlyingMemory, manufacturerId: ManufacturerId, memoryType: MemoryType, extendedDeviceId: extendedDeviceId)
+        public Micron_MT25Q(IMachine machine,long size, byte extendedDeviceId = DefaultExtendedDeviceId)
+            : base(machine ,size, manufacturerId: ManufacturerId, memoryType: MemoryType, extendedDeviceId: extendedDeviceId)
         {
             // original MT25Q supports capacity 8MB to 256MB,
             // but we extended it down to 64KB
             // to become compatible with N25Q line
-            if(underlyingMemory.Size < 64.KB() || underlyingMemory.Size > 256.MB())
+            if(size < 64.KB() || size > 256.MB())
             {
                 throw new ConstructionException("Size of the underlying memory must be in range 64KB - 256MB");
             }
