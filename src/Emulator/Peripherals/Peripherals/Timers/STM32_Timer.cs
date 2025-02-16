@@ -484,11 +484,12 @@ namespace Antmicro.Renode.Peripherals.Timers
 
         private void WriteCaptureCompareOutputEnable(int i, bool value)
         {
+            // FIXME: OCE is not handled correctly. It should gate the internal output state, but at the moment it only turns off the output once!
             ccOutputEnable[i] = value;
             UpdateCaptureCompareTimer(i);
             if(!value)
             {
-                Connections[i].Unset();
+                //Connections[i].Unset();
             }
             this.Log(LogLevel.Noisy, "cctimer{0}: Output Enable set to {1}", i + 1, value);
         }
