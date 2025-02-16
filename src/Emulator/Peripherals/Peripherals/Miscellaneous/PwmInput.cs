@@ -13,7 +13,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
     /// The measurements are performed at regular intervals defined by the <see cref="SampleInterval"/> property.
     /// Only full periods within a measurement window are counted, which means that the lowest measurable frequency is 1 / <see cref="SampleInterval"/> Hz.
     /// On the other hand, the measured frequency won't asymptotically approach the real frequency, since the measurement window is fixed.
-    /// A log message is generated when the frequency or duty cycle changes by more than the thresholds defined by the <see cref="FrequencyThreshold"/> and <see cref="DutyCycleThreshold"/> properties.
+    /// A log message is generated when either frequency or duty cycle change by more than the thresholds defined by <see cref="FrequencyThreshold"/> and <see cref="DutyCycleThreshold"/> respectively.
     /// </summary>
     public class PwmInput : IGPIOReceiver
     {
@@ -24,12 +24,14 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         /// <param name="sampleInterval">The interval between samples in seconds.</param>
         /// <param name="frequencyThreshold">The threshold for frequency change detection in Hz.</param>
         /// <param name="dutyCycleThreshold">The threshold for duty cycle change detection.</param>
-        public PwmInput(IMachine machine, float sampleInterval = 1.0f, float frequencyThreshold = 1.0f, float dutyCycleThreshold = 0.01f)
+        /// <param name="inverted"></param>
+        public PwmInput(IMachine machine, float sampleInterval = 1.0f, float frequencyThreshold = 1.0f, float dutyCycleThreshold = 0.01f, bool inverted = false)
         {
             this.machine = machine;
             SampleInterval = sampleInterval;
             FrequencyThreshold = frequencyThreshold;
             DutyCycleThreshold = dutyCycleThreshold;
+            Inverted = inverted;
             Reset();
         }
 
@@ -37,7 +39,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         {
             timeoutEvent?.Cancel();
             timeoutEvent = machine.LocalTimeSource.EnqueueTimeoutEvent((ulong)Math.Round(SampleInterval * 1000), CalcSignal);
-            PinState = false;
+            PinState = Inverted;
             PwmSignal = new Signal();
             samples.Clear();
             Sample();
@@ -48,7 +50,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             if (number != 0)
                 throw new ArgumentOutOfRangeException(nameof(number), "PwmInput supports only one input.");
 
-            PinState = value;
+            PinState = value != Inverted;
             Sample();
         }
 
@@ -63,6 +65,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         public float SampleInterval { get; set; }
         public float FrequencyThreshold { get; set; }
         public float DutyCycleThreshold { get; set; }
+        public bool Inverted { get; set; }
         public bool PinState { get; private set; }
         public Signal PwmSignal { get; private set; }
 
