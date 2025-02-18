@@ -1888,6 +1888,7 @@ namespace Antmicro.Renode.Peripherals.CAN
                         )
                         {
                             msg.FilterMatchIndex = FilterNumber;
+                            msg.GenerateRDTRRegister();
                             msg.RxFifo = FifoAssignment;
                             return true;
                         }
@@ -1905,6 +1906,7 @@ namespace Antmicro.Renode.Peripherals.CAN
                         )
                         {
                             msg.FilterMatchIndex = FilterNumber;
+                            msg.GenerateRDTRRegister();
                             msg.RxFifo = FifoAssignment;
                             return true;
                         }
