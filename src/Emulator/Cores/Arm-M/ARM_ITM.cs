@@ -1,11 +1,12 @@
-﻿using System;
-using Antmicro.Renode.Core;
+﻿using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Peripherals.CPU;
 using Antmicro.Renode.Utilities;
+using ELFSharp.ELF;
 
 namespace Antmicro.Renode.Peripherals.UART
 {
@@ -25,15 +26,22 @@ namespace Antmicro.Renode.Peripherals.UART
     [AllowedTranslations(AllowedTranslation.ByteToDoubleWord | AllowedTranslation.WordToDoubleWord)]
     public class ARM_ITM : SimpleContainer<VirtualConsole>, IDoubleWordPeripheral, IKnownSize
     {
-        public ARM_ITM(IMachine machine) : base(machine)
+        /// <summary>
+        /// Creates a new instance of ARM ITM.
+        /// When also providing the CPU, the 'ITM Trace Privilege Register' will be checked when writing to stimulus registers.
+        /// </summary>
+        /// <param name="machine">The machine this peripheral is part of.</param>
+        /// <param name="cpu">The CPU that will be used to check the 'ITM Trace Privilege Register' when writing to stimulus registers.</param>
+        public ARM_ITM(IMachine machine, Arm cpu = null) : base(machine)
         {
+            this.cpu = cpu;
             registers = DefineRegisters();
         }
 
         public override void Register(VirtualConsole peripheral, NumberRegistrationPoint<int> registrationPoint)
         {
             if (registrationPoint.Address > 31)
-                throw new RegistrationException($"Trying to register peripheral at address {registrationPoint.Address} which is larger than 31");
+                throw new RegistrationException($"Trying to register console for port {registrationPoint.Address} which is larger than 31");
 
             base.Register(peripheral, registrationPoint);
         }
@@ -50,17 +58,14 @@ namespace Antmicro.Renode.Peripherals.UART
 
         public void WriteDoubleWord(long offset, uint value)
         {
-            if (AccessLocked && offset >= (long)Registers.TraceEnable && offset != (long)Registers.LockAccess)
+            if (!CpuPrivileged && offset > (long)Registers.TraceEnable)
+                this.Log(LogLevel.Warning, "Trying to write to control register 0x{0:X} while not in privileged mode", offset);
+            else if (AccessLocked && offset >= (long)Registers.TraceEnable && offset != (long)Registers.LockAccess)
                 this.Log(LogLevel.Warning, "Trying to write to control register 0x{0:X} while access is locked", offset);
             else if (!itmEnable.Value && offset <= (long)Registers.TraceEnable)
                 this.Log(LogLevel.Warning, "Trying to write to register 0x{0:X} while ITM is disabled", offset);
             else
                 registers.Write(offset, value);
-        }
-
-        public void WriteChar(byte value)
-        {
-            this.Log(LogLevel.Error, "Writing to ARM ITM is not supported");
         }
 
         public long Size => 0x1000;
@@ -80,7 +85,22 @@ namespace Antmicro.Renode.Peripherals.UART
                     .WithTag("STIM[8:31]", 8, 24); // for now, we only support for the first 8 bits to be written
             }
 
-            Registers.TraceEnable.Define(regs).WithValueField(0, 32, out traceEnable);
+            Registers.TraceEnable.Define(regs).WithValueField(0, 32,
+                valueProviderCallback: _ => BitHelper.GetValueFromBitsArray(traceEnable),
+                writeCallback: (_, val) =>
+                {
+                    var newEnable = BitHelper.GetBits(val);
+                    var privileged = CpuPrivileged;
+                    // loop over all bit and check if change is privileged
+                    for (var i = 0; traceEnable.Length > i; i++)
+                    {
+                        if (newEnable[i] != traceEnable[i] && !privileged && tracePrivilege[i / 8].Value)
+                            this.Log(LogLevel.Warning, "Trying to change trace enable for stimulus {0} while not in privileged mode", i);
+                        else
+                            traceEnable[i] = newEnable[i];
+                    }
+                }
+            );
             Registers.TracePrivilege.Define(regs)
                 .WithFlags(0, 4, out tracePrivilege)
                 .WithReservedBits(4, 28);
@@ -102,7 +122,13 @@ namespace Antmicro.Renode.Peripherals.UART
 
         private void WriteStimulus(int index, byte value)
         {
-            if (!BitHelper.IsBitSet(traceEnable.Value, (byte)index))
+            if (!CpuPrivileged && tracePrivilege[index / 8].Value)
+            {
+                this.Log(LogLevel.Warning, "Trying to write to privileged stimulus {0} while not in privileged mode", index);
+                return;
+            }
+
+            if (!traceEnable[index])
             {
                 this.Log(LogLevel.Warning, "Trying to write to stimulus {0} while it is disabled", index);
                 return;
@@ -119,18 +145,20 @@ namespace Antmicro.Renode.Peripherals.UART
 
         private byte ReadStimulus(int index)
         {
-            var fifoReady = itmEnable.Value && BitHelper.IsBitSet(traceEnable.Value, (byte)index);
+            var fifoReady = itmEnable.Value && traceEnable[index];
             return (byte)(fifoReady ? 1 : 0);
         }
 
         private bool AccessLocked => lockAccess.Value != 0xC5ACCE55;
+        private bool CpuPrivileged => (cpu?.CPSR.GetBytes(Endianess.LittleEndian)[0] & 1) != 1;
 
+        private readonly Arm cpu;
         private readonly DoubleWordRegisterCollection registers;
-        private IValueRegisterField traceEnable;
+        private readonly bool[] traceEnable = new bool[32];
         private IFlagRegisterField[] tracePrivilege;
         private IFlagRegisterField itmEnable;
         private IValueRegisterField lockAccess;
-        
+
         // There are way more registers, but they aren't implemented by all cores.
         // And there doesn't seem to be a doc of all possible registers independent of the core.
         private enum Registers

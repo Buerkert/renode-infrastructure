@@ -13,6 +13,7 @@
   <Import Project="./cores.template_NET.csproj" />
 
   <ItemGroup>
+    <Compile Include="Arm-M\ARM_ITM.cs" />
     <Compile Include="Arm-M\CortexM.cs" />
     <Compile Include="Arm-M\CortexMRegisters.cs">
       <DependentUpon>CortexMRegisters.tt</DependentUpon>
