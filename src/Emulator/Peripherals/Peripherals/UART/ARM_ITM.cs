@@ -1,5 +1,8 @@
 ﻿using System;
+using Antmicro.Renode.Core;
+using Antmicro.Renode.Core.Structure;
 using Antmicro.Renode.Core.Structure.Registers;
+using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Utilities;
@@ -7,14 +10,22 @@ using Antmicro.Renode.Utilities;
 namespace Antmicro.Renode.Peripherals.UART
 {
     [AllowedTranslations(AllowedTranslation.ByteToDoubleWord | AllowedTranslation.WordToDoubleWord)]
-    public class ARM_ITM : IUART, IDoubleWordPeripheral, IKnownSize
+    public class ARM_ITM : SimpleContainer<VirtualConsole>, IDoubleWordPeripheral, IKnownSize
     {
-        public ARM_ITM()
+        public ARM_ITM(IMachine machine) : base(machine)
         {
             registers = DefineRegisters();
         }
 
-        public void Reset()
+        public override void Register(VirtualConsole peripheral, NumberRegistrationPoint<int> registrationPoint)
+        {
+            if (registrationPoint.Address > 31)
+                throw new RegistrationException($"Trying to register peripheral at address {registrationPoint.Address} which is larger than 31");
+
+            base.Register(peripheral, registrationPoint);
+        }
+
+        public override void Reset()
         {
             registers.Reset();
         }
@@ -40,11 +51,7 @@ namespace Antmicro.Renode.Peripherals.UART
         }
 
         public long Size => 0x1000;
-        public event Action<byte> CharReceived;
-        public uint BaudRate { get; }
-        public Bits StopBits { get; }
-        public Parity ParityBit { get; }
-        
+
         private DoubleWordRegisterCollection DefineRegisters()
         {
             var regs = new DoubleWordRegisterCollection(this);
@@ -88,7 +95,12 @@ namespace Antmicro.Renode.Peripherals.UART
                 return;
             }
 
-            CharReceived?.Invoke(value);
+            if (!TryGetByAddress(index, out var console))
+            {
+                this.Log(LogLevel.Warning, "Device wrote 0x{0:X} to stimulus {1} but there is no console registered for this index", value, index);
+                return;
+            }
+            console.DisplayChar(value);
         }
 
         private byte ReadStimulus(int index)
@@ -108,14 +120,10 @@ namespace Antmicro.Renode.Peripherals.UART
         private enum Registers
         {
             Stimulus0 = 0x000,
-
-            // ...
             Stimulus31 = 0x07C,
             TraceEnable = 0xE00,
             TracePrivilege = 0xE40,
             TraceControl = 0xE80,
-
-            // There are more registers but they are not implemented
             LockAccess = 0xFB0,
         }
     }
