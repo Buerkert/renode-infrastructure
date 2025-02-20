@@ -9,6 +9,19 @@ using Antmicro.Renode.Utilities;
 
 namespace Antmicro.Renode.Peripherals.UART
 {
+    /// <summary>
+    /// Implementation of ARM ITM (Instrumentation Trace Macrocell), which is used by devices for SWO logging.
+    /// Other features like integration with DWT (Data Watchpoint and Trace) and TPIU (Trace Port Interface Unit) are not implemented.
+    /// To see the output, register a <see cref="VirtualConsole"/> at the desired index (0-31) and attach an analyzer to it.
+    /// </summary>
+    /// <code>
+    /// -- repl file
+    /// itm: UART.ARM_ITM @ sysbus 0xE0000000
+    /// swo0: UART.VirtualConsole @ itm 0
+    ///
+    /// -- resc file
+    /// showAnalyzer itm.swo0
+    /// </code>
     [AllowedTranslations(AllowedTranslation.ByteToDoubleWord | AllowedTranslation.WordToDoubleWord)]
     public class ARM_ITM : SimpleContainer<VirtualConsole>, IDoubleWordPeripheral, IKnownSize
     {
@@ -100,6 +113,7 @@ namespace Antmicro.Renode.Peripherals.UART
                 this.Log(LogLevel.Warning, "Device wrote 0x{0:X} to stimulus {1} but there is no console registered for this index", value, index);
                 return;
             }
+
             console.DisplayChar(value);
         }
 
@@ -116,7 +130,9 @@ namespace Antmicro.Renode.Peripherals.UART
         private IFlagRegisterField[] tracePrivilege;
         private IFlagRegisterField itmEnable;
         private IValueRegisterField lockAccess;
-
+        
+        // There are way more registers, but they aren't implemented by all cores.
+        // And there doesn't seem to be a doc of all possible registers independent of the core.
         private enum Registers
         {
             Stimulus0 = 0x000,
