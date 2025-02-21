@@ -25,12 +25,15 @@ namespace Antmicro.Renode.Peripherals.Memory
         /// <param name="create">If true, the file doesnt have to exist and the memory will be filled with <paramref name="paddingVal"/></param>
         /// <param name="sameSize">If true, the file must have the same size as the memory, otherwise the file content will be truncated or padded with <paramref name="paddingVal"/></param>
         /// <param name="paddingVal">Value to fill the memory with if the file is too small or does not exist.</param>
-        public PersistentArrayMemory(int size, string path = null, bool create = true, bool sameSize = true, byte paddingVal = 0) : base(size)
+        /// <param name="saveOnReset">If true, the memory content will be saved to the file on reset.</param>
+        public PersistentArrayMemory(int size, string path = null, bool create = true, bool sameSize = true, byte paddingVal = 0,
+            bool saveOnReset = false) : base(size)
         {
+            SaveOnReset = saveOnReset;
             this.paddingVal = paddingVal;
             try
             {
-                if (path != null)
+                if (!string.IsNullOrEmpty(path))
                     LinkFile(path, create, sameSize);
             }
             catch (RecoverableException e)
@@ -39,11 +42,24 @@ namespace Antmicro.Renode.Peripherals.Memory
             }
         }
 
+        public override void Reset()
+        {
+            if (SaveOnReset)
+            {
+                if (!string.IsNullOrEmpty(LinkedPath))
+                    SaveInternal();
+                else
+                    this.Log(LogLevel.Warning, "Memory is not linked to any file, skipping save on reset");
+            }
+
+            base.Reset();
+        }
+
         public void Dispose()
         {
             try
             {
-                if (LinkedPath != null)
+                if (!string.IsNullOrEmpty(LinkedPath))
                     SaveInternal();
                 else
                     this.Log(LogLevel.Info, "Memory is not linked to any file, skipping save");
@@ -117,7 +133,7 @@ namespace Antmicro.Renode.Peripherals.Memory
         /// </summary>
         public void SaveToFile()
         {
-            if (LinkedPath == null)
+            if (!string.IsNullOrEmpty(LinkedPath))
                 throw new RecoverableException("Path is not set.");
             try
             {
@@ -130,6 +146,7 @@ namespace Antmicro.Renode.Peripherals.Memory
         }
 
         public string LinkedPath { get; private set; }
+        public bool SaveOnReset { get; set; }
 
         private void SaveInternal()
         {

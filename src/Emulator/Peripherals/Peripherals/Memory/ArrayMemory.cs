@@ -79,7 +79,7 @@ namespace Antmicro.Renode.Peripherals.Memory
             bytes.CopyTo(array, offset);
         }
 
-        public void Reset()
+        public virtual void Reset()
         {
             // nothing happens
         }
