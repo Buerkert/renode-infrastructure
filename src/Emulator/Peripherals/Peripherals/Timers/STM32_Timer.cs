@@ -68,14 +68,22 @@ namespace Antmicro.Renode.Peripherals.Timers
                     }
                 }
                 
-                if(updateInterruptEnable.Value && repetitionsLeft == 0)
+                if(repetitionsLeft == 0)
                 {
+                    if (Mode == WorkMode.OneShot)
+                    {
+                        enableRequested = false;
+                        Enabled = false;
+                    }
                     // 2 of central-aligned modes should raise IRQ only on overflow/underflow, hence it happens 2 times less often
                     var centerAlignedUnbalancedMode = (centerAlignedMode.Value == CenterAlignedMode.CenterAligned1) || (centerAlignedMode.Value == CenterAlignedMode.CenterAligned2);
-                    this.Log(LogLevel.Noisy, "IRQ pending");
-                    updateInterruptFlag = true;
                     repetitionsLeft = 1u + (uint)repetitionCounter.Value * (centerAlignedUnbalancedMode ? 2u : 1u);
-                    UpdateInterrupts();
+                    if (updateInterruptEnable.Value)
+                    {
+                        this.Log(LogLevel.Noisy, "IRQ pending");
+                        updateInterruptFlag = true;
+                        UpdateInterrupts();
+                    }
                 }
 
                 if(repetitionsLeft > 0)
@@ -238,10 +246,19 @@ namespace Antmicro.Renode.Peripherals.Timers
 
                         repetitionsLeft = (uint)repetitionCounter.Value;
                         
-                        if(!updateRequestSource.Value && updateInterruptEnable.Value)
+                        if(!updateRequestSource.Value)
                         {
-                            this.Log(LogLevel.Noisy, "IRQ pending");
-                            updateInterruptFlag = true;
+                            if (Mode == WorkMode.OneShot)
+                            {
+                                enableRequested = false;
+                                Enabled = false;
+                            }
+                            
+                            if (updateInterruptEnable.Value)
+                            {
+                                this.Log(LogLevel.Noisy, "IRQ pending");
+                                updateInterruptFlag = true;
+                            }
                         }
                         for(var i = 0; i < NumberOfCCChannels; ++i)
                         {
